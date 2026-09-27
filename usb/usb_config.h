@@ -182,7 +182,9 @@
 /* ---------------- XHCI Configuration ---------------- */
 #define CONFIG_USB_XHCI_HCCR_OFFSET (0x0)
 
+#ifndef CONFIG_USB_HS
 #define CONFIG_USB_HS
+#endif
 #define ATTR_FAST_RAM_SECTION __attribute__((section(".fast")))
 
 #endif

@@ -28,6 +28,7 @@ extern "C" {
 #include "file_chooser.h"
 #include "programmer.h"
 #include "usb_gamepad.h"
+#include "usb_cdc_console.h"
 #include "utils.h"
 #include "cores.h"
 #include "overlay.h"
@@ -572,16 +573,26 @@ int main(void)
     fatfs_sdh_driver_register();        // calls SDH_Init()
     // f_mount(&fs_sd, "sd:", 0);          // registers SDMMC drive 
 
+#ifdef TANG_USB_CDC_CONSOLE
+    // The Console 138K retail board has onboard SD and FPGA-side controller
+    // ports, so dedicate the BL616 OTG connector to a PC-facing debug link.
+    overlay_status("Initializing USB CDC...");
+    usb_cdc_console_init();
+#else
     // Initializing USB host...
     overlay_status("Initializing USB host...");
     usbh_initialize();
     fatfs_usbh_driver_register();
     usb_gamepad_init();
+#endif
 
     overlay_status("Creating tasks...");
     // Create the tasks
     xTaskCreate(main_task, "main_task", MAIN_TASK_STACK_SIZE, NULL, MAIN_TASK_PRIORITY, &main_task_handle);
     xTaskCreate(uart1_rx_task, "uart1_rx_task", UART1_RX_TASK_STACK_SIZE, NULL, UART1_RX_TASK_PRIORITY, &uart1_rx_task_handle);
+#ifdef TANG_USB_CDC_CONSOLE
+    usb_cdc_console_start_task();
+#endif
     
     vTaskStartScheduler();
 
