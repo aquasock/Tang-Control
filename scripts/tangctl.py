@@ -109,6 +109,10 @@ def run_benchmark(port, size):
         port.write(chunk)
         crc = zlib.crc32(chunk, crc)
         remaining -= len(chunk)
+    # Force a short USB packet when the payload ends on a 512-byte boundary.
+    # The device consumes exactly `size` bytes; the newline remains as an
+    # empty console command after the raw transfer finishes.
+    port.write(b"\n")
     port.flush()
     elapsed = time.monotonic() - started
 
@@ -195,6 +199,10 @@ def run_put(port, local_path, remote_path):
             if not chunk:
                 break
             port.write(chunk)
+    # Linux may finish a CDC transfer with only full 512-byte USB packets.
+    # Send a harmless console newline so the BL616's outstanding bulk read
+    # completes even when the file's final partial DMA block is packet-aligned.
+    port.write(b"\n")
     port.flush()
 
     result = None
