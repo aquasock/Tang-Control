@@ -290,7 +290,10 @@ static void uart1_rx_task(void *pvParameters)
     uint16_t len = 0;
     
     while (1) {
-        if (bflb_uart_rxavailable(uart1_dev)) {
+        // Drain every byte already in the FIFO before yielding. Reading only
+        // one byte per scheduler tick adds roughly one millisecond per reply
+        // byte, which throttles acknowledged streams to about 50 KiB/s.
+        while (bflb_uart_rxavailable(uart1_dev)) {
             uint8_t ch = bflb_uart_getchar(uart1_dev);
             
             if (pos == 0) {          // expecting 0xAA
