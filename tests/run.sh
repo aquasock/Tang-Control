@@ -12,3 +12,4 @@ g++ -std=c++17 -Wall -Wextra -Werror \
     -o "$build_dir/m3u_playlist_test"
 
 "$build_dir/m3u_playlist_test" "$repo_dir/tests/fixtures/vlc-repeat.m3u8"
+python3 "$repo_dir/tests/tangctl_test.py"

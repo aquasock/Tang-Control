@@ -18,6 +18,9 @@ from serial.tools import list_ports
 
 USB_VID = 0xFFFF
 USB_PID = 0x6160
+MIB = 1024 * 1024
+CRC_VERIFY_BASE_TIMEOUT = 10
+CRC_VERIFY_MIN_BYTES_PER_SECOND = MIB
 
 
 def find_port(vid=USB_VID, pid=USB_PID):
@@ -159,6 +162,14 @@ def file_crc(path):
     return size, crc
 
 
+def crc_verify_timeout(size):
+    """Allow a conservative one MiB/s plus fixed SD command overhead."""
+    scan_seconds = (
+        size + CRC_VERIFY_MIN_BYTES_PER_SECOND - 1
+    ) // CRC_VERIFY_MIN_BYTES_PER_SECOND
+    return max(30, CRC_VERIFY_BASE_TIMEOUT + scan_seconds)
+
+
 def validate_remote_path(remote_path, allow_empty=False):
     try:
         encoded = remote_path.encode("ascii")
@@ -218,7 +229,11 @@ def run_put(port, local_path, remote_path):
     if result is None or f"bytes={size}" not in result or f"crc32={crc:08x}" not in result:
         raise RuntimeError(f"invalid upload result: {result}")
 
-    lines = run_command(port, f"crc {remote_path}")
+    lines = run_command(
+        port,
+        f"crc {remote_path}",
+        timeout=crc_verify_timeout(size),
+    )
     expected = f"FILE bytes={size} crc32={crc:08x}"
     if expected not in lines:
         raise RuntimeError("SD readback CRC did not match the local file")
