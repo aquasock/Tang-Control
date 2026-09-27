@@ -124,7 +124,7 @@ frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
 
 ## Tang-Phosphor audio loader
 
-Core ID `0x50` has an integrated SD-card loader for standalone WAV files and
+Core ID `0x50` has an integrated SD-card loader for standalone WAV/FLAC files and
 VLC-style M3U/M3U8 playlists. It supports relative files as independent stream
 sessions, automatic track advancement, duplicate entries, and in-core
 Previous/Next/Stop controls without packaging the files in a TAR archive.

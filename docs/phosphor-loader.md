@@ -15,7 +15,7 @@ cores/console138k/tang-phosphor.bin
 
 Place audio and playlists under `music/`. TangCore then shows **Phosphor** in
 its main menu. Selecting it opens the filtered audio chooser, loads the FPGA
-core when necessary, and begins the selected WAV or playlist.
+core when necessary, and begins the selected WAV, FLAC, or playlist.
 
 The Phosphor in-core menu provides **Load Audio / Playlist**, **Previous
 Track**, **Next Track**, and **Stop Playback** controls.
@@ -31,6 +31,10 @@ extended-M3U form used by the project qualification fixture:
 track.wav
 ```
 
+Playlist entries may mix `.wav` and `.flac` tracks; extension matching is
+case-insensitive. Both formats use the core's signed 16-bit stereo,
+44.1/48 kHz CD-quality profile.
+
 - Track paths are resolved relative to the playlist directory.
 - Forward and backward slashes, `.` components, and bounded `..` components
   are normalized without allowing a path to escape the filesystem root.
@@ -41,13 +45,13 @@ track.wav
   FPGA player's actual completion state.
 - A playlist may contain at most 255 tracks. A source line is limited to 512
   bytes and a resolved path to 255 bytes.
-- The current decoder milestone accepts WAV entries only. URLs, HLS playlists,
-  nested playlists, missing files, and unsupported formats are rejected before
-  playback begins.
+- URLs, HLS playlists, nested playlists, missing files, and unsupported formats
+  are rejected before playback begins.
 
-Track changes are not gapless because every entry is an independent stream
-session. Later FLAC, MP3, and Ogg support can reuse the same playlist layer once
-their FPGA decoders are available.
+Every entry is an independent stream session, so sample-contiguous gapless
+playback is not guaranteed. Tang-Phosphor keeps the boundary silent and retains
+the previous native rate while the next track prefills. The current project
+scope is intentionally limited to WAV and FLAC.
 
 ## Verification
 

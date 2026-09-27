@@ -68,11 +68,19 @@ void test_bom_crlf_and_paths()
 void test_plain_m3u_and_root_path()
 {
     M3uParser parser = parse("sd:music/list.m3u",
-                             "one.wav\n/music/two.wav\n");
+                             "one.wav\n/music/two.flac\n");
     assert(parser.error().empty());
     assert(parser.entries().size() == 2);
     assert(parser.entries()[0].title == "one");
-    assert(parser.entries()[1].path == "sd:music/two.wav");
+    assert(parser.entries()[1].path == "sd:music/two.flac");
+    assert(parser.entries()[1].title == "two");
+}
+
+void test_audio_extensions()
+{
+    assert(m3u_path_has_extension("sd:music/track.wav", ".wav"));
+    assert(m3u_path_has_extension("sd:music/track.FLAC", ".flac"));
+    assert(!m3u_path_has_extension("sd:music/track.flac.txt", ".flac"));
 }
 
 void test_rejections()
@@ -103,7 +111,8 @@ int main(int argc, char **argv)
     test_vlc_fixture(argv[1]);
     test_bom_crlf_and_paths();
     test_plain_m3u_and_root_path();
+    test_audio_extensions();
     test_rejections();
-    std::cout << "PASS: VLC M3U8 parsing, path resolution, duplicates, and bounds\n";
+    std::cout << "PASS: VLC M3U8 parsing, WAV/FLAC paths, duplicates, and bounds\n";
     return 0;
 }

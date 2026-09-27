@@ -555,7 +555,7 @@ static void main_task(void *pvParameters)
             if (core) {
                 std::string dir = std::string(drv).append(core->rom_dir);
                 if (core->id == 0x50) {
-                    menu_loadrom(dir.c_str(), {".wav", ".m3u", ".m3u8"});
+                    menu_loadrom(dir.c_str(), {".wav", ".flac", ".m3u", ".m3u8"});
                 } else {
                     menu_loadrom(dir.c_str());
                 }

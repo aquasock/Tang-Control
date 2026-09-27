@@ -172,8 +172,9 @@ bool parse_playlist(const std::string &path, std::vector<M3uEntry> &entries,
 
     entries = parser.entries();
     for (const M3uEntry &entry : entries) {
-        if (!m3u_path_has_extension(entry.path, ".wav")) {
-            error = "Playlist contains a non-WAV track";
+        if (!m3u_path_has_extension(entry.path, ".wav") &&
+            !m3u_path_has_extension(entry.path, ".flac")) {
+            error = "Playlist contains an unsupported track";
             return false;
         }
         FILINFO info;
@@ -190,11 +191,12 @@ bool load_selection(const std::string &path, std::vector<M3uEntry> &entries,
                     std::string &error)
 {
     entries.clear();
-    if (m3u_path_has_extension(path, ".wav")) {
+    if (m3u_path_has_extension(path, ".wav") ||
+        m3u_path_has_extension(path, ".flac")) {
         FILINFO info;
         if (f_stat(path.c_str(), &info) != FR_OK ||
             (info.fattrib & AM_DIR) != 0 || info.fsize == 0) {
-            error = "WAV file is missing or empty";
+            error = "Audio file is missing or empty";
             return false;
         }
         entries.push_back({path, basename_of(path), -1});
@@ -204,7 +206,7 @@ bool load_selection(const std::string &path, std::vector<M3uEntry> &entries,
         m3u_path_has_extension(path, ".m3u8")) {
         return parse_playlist(path, entries, error);
     }
-    error = "Choose WAV, M3U, or M3U8";
+    error = "Choose WAV, FLAC, M3U, or M3U8";
     return false;
 }
 
@@ -225,7 +227,7 @@ bool wait_for_player_complete(uint32_t generation, std::string &error)
         if (state == PHOSPHOR_STATE_ERROR) {
             const uint8_t code = static_cast<uint8_t>((result.data >> 6) & 0xff);
             char message[40];
-            snprintf(message, sizeof(message), "WAV decoder error %u",
+            snprintf(message, sizeof(message), "Audio decoder error %u",
                      static_cast<unsigned>(code));
             error = message;
             return false;
@@ -402,7 +404,7 @@ struct PhosphorMenu : Menu {
             chooser.rootdir = directory_;
             chooser.curdir = directory_;
             chooser.msg_return = "<< Cancel";
-            chooser.extensions = {".wav", ".m3u", ".m3u8"};
+            chooser.extensions = {".wav", ".flac", ".m3u", ".m3u8"};
             std::string path;
             const bool selected = chooser.choose_file(path);
             do_redraw();
