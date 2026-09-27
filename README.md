@@ -52,6 +52,11 @@ sudo install -m 0644 99-tangcore-usb.rules /etc/udev/rules.d/99-tangcore-usb.rul
 sudo udevadm control --reload-rules
 ```
 
+The rule covers both Tang-Control's normal `ffff:6160` CDC console and the
+BL616 ROM bootloader's `349b:6160` programming port. After installing it, hold
+**BOOT**, tap **RESET**, and release **BOOT** to enter programming mode without
+disconnecting power.
+
 Insert the SD card before boot, power the console normally, wait for the menu,
 and then connect `DEBUG/OTG` to the PC. The development configuration
 enumerates as USB VID:PID `ffff:6160`; `scripts/tangctl.py` finds the serial
@@ -116,6 +121,15 @@ address map belongs to the core rather than Tang-Control.
 `stream` reads from the console's SD card and uses acknowledged 1024-byte
 frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
 2 Mbps rate afterward.
+
+## Tang-Phosphor audio loader
+
+Core ID `0x50` has an integrated SD-card loader for standalone WAV files and
+VLC-style M3U/M3U8 playlists. It supports relative files as independent stream
+sessions, automatic track advancement, duplicate entries, and in-core
+Previous/Next/Stop controls without packaging the files in a TAR archive.
+Setup, compatibility limits, and the deterministic parser test are documented
+in [`docs/phosphor-loader.md`](docs/phosphor-loader.md).
 
 Acknowledgements
 * JTAG FPGA programming logic based on [openFPGALoader](https://github.com/trabucayre/openFPGALoader)

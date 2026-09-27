@@ -27,11 +27,12 @@ extern int loadgba(const char *fname);
 extern int loadmd(const char *fname);
 extern int loadsms(const char *fname);
 extern int loadpc(const char *fname);
+extern int loadphosphor(const char *fname);
 
 extern bool find_core_for_board(std::string &fname, const char *core_name);
 
 struct PcxtMenu: Menu {
-    const char *imgdir;
+    std::string imgdir;
     PcxtMenu(const char *imgdir);
     virtual void render() override;
     virtual std::vector<int> get_options() override;
@@ -40,6 +41,8 @@ struct PcxtMenu: Menu {
 
 Menu *create_default_menu(const char *imgdir);
 Menu *create_pcxt_menu(const char *imgdir);
+Menu *create_phosphor_menu(const char *imgdir);
+void phosphor_player_init(void);
 
 extern bool floppy[2];
 extern std::string floppy_fname[2];

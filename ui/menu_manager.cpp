@@ -35,11 +35,12 @@ void menu_input_loop() {
 
     DEBUG("Menu input loop\n");
     std::vector<int> options = menu_current()->get_options();
-    int last = 0, active = 0;
+    int last = -1, active = 0;
     while (menu_is_active() && overlay_on()) {
         if (menu_current()->redraw) {
             menu_current()->render();
             menu_current()->redraw = false;
+            last = -1;
         }
 
         uint16_t joy1=0, joy2=0, hid1=0, hid2=0;    
@@ -61,12 +62,15 @@ void menu_input_loop() {
             if (active < options.size()-1) active++;
         }
 
-        for (int i = 0; i < options.size(); i++) {
-            overlay_cursor(0, options[i]);
-            if (i == active)
-                overlay_printf(">");
-            else
+        if (last != active) {
+            if (last >= 0 && last < static_cast<int>(options.size())) {
+                overlay_cursor(0, options[last]);
                 overlay_printf(" ");
+            }
+            if (active >= 0 && active < static_cast<int>(options.size())) {
+                overlay_cursor(0, options[active]);
+                overlay_printf(">");
+            }
         }
 
         if ((joy1 & 0x100) || (joy2 & 0x100) || // button A pressed
@@ -87,6 +91,7 @@ void menu_input_loop() {
                 if (active >= options.size())
                     active = options.size()-1;
                 menu_current()->do_redraw();
+                last = -1;
             }
         }
 
@@ -99,5 +104,6 @@ void menu_input_loop() {
         if (last != active)
             delay(100);
         last = active;
+        delay(10);
     }
 }

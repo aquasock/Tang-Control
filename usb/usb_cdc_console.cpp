@@ -25,6 +25,7 @@ extern "C" {
 #include "usb_config.h"
 #include "fpga_debug.h"
 #include "fpga_stream.h"
+#include "fpga_file_stream.h"
 #include "init.h"
 
 extern const char *BOARD_NAME;
@@ -405,25 +406,6 @@ void run_baud(const char *argument)
     cdc_printf("BAUD %u\r\nOK\r\n", static_cast<unsigned>(rate));
 }
 
-bool send_stream_frame(uint8_t flags, uint16_t stream_id, uint32_t offset,
-                       const uint8_t *data, uint16_t length,
-                       uint32_t expected_next)
-{
-    fpga_stream_result result;
-    if (!fpga_stream_send(flags, stream_id, offset, data, length, &result)) {
-        cdc_print("ERR FPGA stream response timed out\r\n");
-        return false;
-    }
-    if (result.status != 0 || result.next_offset != expected_next) {
-        cdc_printf("ERR FPGA stream status=%u next=%u expected=%u\r\n",
-                   static_cast<unsigned>(result.status),
-                   static_cast<unsigned>(result.next_offset),
-                   static_cast<unsigned>(expected_next));
-        return false;
-    }
-    return true;
-}
-
 void run_stream(const char *path)
 {
     if (!valid_remote_path(path)) {
@@ -435,94 +417,23 @@ void run_stream(const char *path)
         return;
     }
 
-    fpga_debug_result capabilities;
-    if (!run_fpga_request(FPGA_EXT_CAPABILITIES, 0, 0, capabilities) ||
-        (capabilities.data & FPGA_EXT_CAP_STREAM) == 0) {
-        cdc_print("ERR active core does not support streaming\r\n");
-        return;
-    }
-
     char full_path[192];
     if (!make_sd_path(full_path, sizeof(full_path), path)) {
         cdc_print("ERR remote path is too long\r\n");
         return;
     }
-    FIL file;
-    FRESULT file_result = f_open(&file, full_path, FA_READ);
-    if (file_result != FR_OK) {
-        cdc_printf("ERR open failed fatfs=%u\r\n",
-                   static_cast<unsigned>(file_result));
+    const fpga_file_stream_result result = fpga_file_stream(full_path);
+    if (result.status != fpga_file_stream_status::OK) {
+        cdc_printf("ERR stream %s fatfs=%u transport=%u\r\n",
+                   fpga_file_stream_status_text(result.status),
+                   static_cast<unsigned>(result.filesystem_status),
+                   static_cast<unsigned>(result.transport_status));
         return;
     }
-    if (f_size(&file) > 0xffffffffu) {
-        f_close(&file);
-        cdc_print("ERR stream files are limited to 4 GiB\r\n");
-        return;
-    }
-
-    const bool can_accelerate =
-        (capabilities.data & FPGA_EXT_CAP_BAUD_SWITCH) != 0;
-    bool using_fast_baud = false;
-    if (can_accelerate) {
-        using_fast_baud = fpga_debug_set_baud(5000000);
-        if (!using_fast_baud) {
-            f_close(&file);
-            cdc_print("ERR could not negotiate 5 Mbps stream rate\r\n");
-            return;
-        }
-    }
-
-    static uint16_t next_stream_id = 1;
-    const uint16_t stream_id = next_stream_id++;
-    uint32_t offset = 0;
-    uint32_t crc = 0xffffffffu;
-    bool success = send_stream_frame(FPGA_STREAM_START, stream_id, 0,
-                                     nullptr, 0, 0);
-    const uint64_t started = bflb_mtimer_get_time_ms();
-
-    while (success) {
-        UINT count = 0;
-        file_result = f_read(&file, file_io_buffer, FPGA_STREAM_MAX_DATA, &count);
-        if (file_result != FR_OK || count == 0) {
-            break;
-        }
-        crc = crc32_update(crc, file_io_buffer, count);
-        success = send_stream_frame(FPGA_STREAM_DATA, stream_id, offset,
-                                    file_io_buffer, static_cast<uint16_t>(count),
-                                    offset + count);
-        offset += count;
-    }
-    if (file_result != FR_OK) {
-        cdc_printf("ERR read failed fatfs=%u\r\n",
-                   static_cast<unsigned>(file_result));
-        success = false;
-    }
-    if (success) {
-        success = send_stream_frame(FPGA_STREAM_END, stream_id, offset,
-                                    nullptr, 0, offset);
-    } else {
-        fpga_stream_result ignored;
-        fpga_stream_send(FPGA_STREAM_CANCEL, stream_id, offset, nullptr, 0,
-                         &ignored);
-    }
-
-    const FRESULT close_result = f_close(&file);
-    if (using_fast_baud && !fpga_debug_set_baud(2000000)) {
-        cdc_print("ERR failed to restore 2 Mbps FPGA rate\r\n");
-        return;
-    }
-    if (!success || close_result != FR_OK) {
-        if (close_result != FR_OK)
-            cdc_printf("ERR close failed fatfs=%u\r\n",
-                       static_cast<unsigned>(close_result));
-        return;
-    }
-
-    const uint64_t elapsed = bflb_mtimer_get_time_ms() - started;
     cdc_printf("STREAM bytes=%u ms=%llu crc32=%08x\r\nOK\r\n",
-               static_cast<unsigned>(offset),
-               static_cast<unsigned long long>(elapsed),
-               static_cast<unsigned>(~crc));
+               static_cast<unsigned>(result.bytes),
+               static_cast<unsigned long long>(result.elapsed_ms),
+               static_cast<unsigned>(result.crc32));
 }
 
 void run_benchmark(uint32_t expected)

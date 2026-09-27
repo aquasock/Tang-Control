@@ -1,5 +1,6 @@
 #include <vector>
 #include <string>
+#include <ctype.h>
 
 extern "C" {
 #include "ff.h"
@@ -15,6 +16,27 @@ extern "C" {
 // void FileChooser::set_fs(FATFS *fs) {
 //     this->fs = fs;
 // }
+
+bool FileChooser::accepts_file(const string &name) const {
+    if (extensions.empty())
+        return true;
+    for (const string &extension : extensions) {
+        if (name.size() < extension.size())
+            continue;
+        const size_t offset = name.size() - extension.size();
+        bool match = true;
+        for (size_t index = 0; index < extension.size(); index++) {
+            if (tolower(static_cast<unsigned char>(name[offset + index])) !=
+                tolower(static_cast<unsigned char>(extension[index]))) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return true;
+    }
+    return false;
+}
 
 // list files in dir, starting from number `start` and return at most `len` files. `count` is set to total number of files.
 bool FileChooser::list_files(string dir, vector<FileEntry> &files, int start, int len, int *count) {
@@ -33,11 +55,14 @@ bool FileChooser::list_files(string dir, vector<FileEntry> &files, int start, in
 
     FILINFO fno;
     while (f_readdir(&d, &fno) == FR_OK && fno.fname[0] != 0) {
+        const bool is_dir = (fno.fattrib & AM_DIR) != 0;
+        if (!is_dir && !accepts_file(fno.fname))
+            continue;
         (*count)++;
         if (start > 0) {
             start--;
         } else if (files.size() < len)
-            files.push_back({fno.fname, fno.fattrib & AM_DIR});
+            files.push_back({fno.fname, is_dir});
     }
     f_closedir(&d);
     return true;
@@ -61,7 +86,7 @@ bool FileChooser::choose_file(string &res) {
                 int idx = page*PAGESIZE + i;
                 overlay_cursor(2, i+TOPLINE);
                 if (i < files.size()) {
-                    overlay_printf(files[i].name.c_str());
+                    overlay_printf("%s", files[i].name.c_str());
                     if (idx != 0 && files[i].is_dir)
                         overlay_printf("/");
                 }

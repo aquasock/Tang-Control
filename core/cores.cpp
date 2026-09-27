@@ -14,6 +14,8 @@ std::vector<int16_t> main_menu_config;
 
 struct core_info *find_core_by_id(uint16_t id) {
     for (auto &core : core_info_list) {
+        if (core.id == 0)
+            break;
         if (core.id == id)
             return &core;
     }
@@ -37,12 +39,15 @@ void init_core_list() {
         {3, "Game Boy Advance", "gba", "gbatang.bin", loadgba, create_default_menu},
         {4, "MegaDrive / Genesis", "genesis", "mdtang.bin", loadmd, create_default_menu},
         {5, "Sega Master System", "sms", "smstang.bin", loadsms, create_default_menu},
-        {6, "IBM PC/XT", "pc", "pctang.bin", loadpc, create_pcxt_menu}
+        {6, "IBM PC/XT", "pc", "pctang.bin", loadpc, create_pcxt_menu},
+        {0x50, "Phosphor", "music", "tang-phosphor.bin", loadphosphor,
+         create_phosphor_menu},
+        {0, nullptr, nullptr, nullptr, nullptr, nullptr}
     };
 
     main_menu_config = {1,2,
 #if defined(TANG_MEGA60K) || defined(TANG_MEGA138K) || defined(TANG_CONSOLE60K) || defined(TANG_CONSOLE138K)
-        3,4,5,6,
+        3,4,5,6,0x50,
 #endif
         -1, -2
     };

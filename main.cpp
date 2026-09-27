@@ -32,6 +32,7 @@ extern "C" {
 #include "utils.h"
 #include "fpga_debug.h"
 #include "fpga_stream.h"
+#include "fpga_file_stream.h"
 #include "cores.h"
 #include "overlay.h"
 #include "init.h"
@@ -115,11 +116,13 @@ FileChooser file_chooser;
 // dir: initial dir including the drive name (e.g. "sd:nes", "usb:cores")
 // return 0: user chose a ROM (*choice), 1: no choice made, -1: error
 // file chosen: pwd / file_name[*choice]
-static int menu_loadrom(const char *dir) {
+static int menu_loadrom(const char *dir,
+                        const std::vector<std::string> &extensions = {}) {
     string fname;
     file_chooser.rootdir = dir;
     file_chooser.curdir = dir;
     file_chooser.msg_return = "<< Return to main menu";
+    file_chooser.extensions = extensions;
     bool r = file_chooser.choose_file(fname);
     if (!r) {
         overlay_status("No file chosen");
@@ -142,6 +145,8 @@ static int menu_loadrom(const char *dir) {
     string path = fname.substr(fname.find(":")+1);
     for (int i = 0; i < core_info_list.size(); i++) {
         core_info *c = &core_info_list[i];
+        if (c->id == 0)
+            break;
         if (path.find(c->rom_dir) == 0) {
             overlay_status("ROM for: %s", c->display_name);
             core = c;
@@ -524,12 +529,9 @@ static void main_task(void *pvParameters)
                 core_info *core = find_core_by_id(active_core);
                 if (core != NULL) {
                     DEBUG("Found core_info. Displaying menu\n");
-                    Menu *menu;
-                    if (active_core == 6) {
-                        menu = create_pcxt_menu(std::string(drv).append(core->rom_dir).c_str());
-                    } else {
-                        menu = create_default_menu(std::string(drv).append(core->rom_dir).c_str());
-                    }
+                    const std::string directory =
+                        std::string(drv).append(core->rom_dir);
+                    Menu *menu = core->create_menu(directory.c_str());
                     std::unique_ptr<Menu> menu_ptr(menu);
                     push_menu(std::move(menu_ptr));
                     menu->do_redraw();
@@ -552,7 +554,11 @@ static void main_task(void *pvParameters)
             }
             if (core) {
                 std::string dir = std::string(drv).append(core->rom_dir);
-                menu_loadrom(dir.c_str());
+                if (core->id == 0x50) {
+                    menu_loadrom(dir.c_str(), {".wav", ".m3u", ".m3u8"});
+                } else {
+                    menu_loadrom(dir.c_str());
+                }
             }
         } else if (main_menu_config[choice] == -1) {
             // load cores manually
@@ -603,6 +609,8 @@ int main(void)
     state_mutex = xSemaphoreCreateMutex();
     fpga_debug_init();
     fpga_stream_init();
+    fpga_file_stream_init();
+    phosphor_player_init();
 
     overlay_status("Initializing SDH...");
     fatfs_sdh_driver_register();        // calls SDH_Init()
