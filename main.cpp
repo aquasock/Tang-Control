@@ -30,6 +30,8 @@ extern "C" {
 #include "usb_gamepad.h"
 #include "usb_cdc_console.h"
 #include "utils.h"
+#include "fpga_debug.h"
+#include "fpga_stream.h"
 #include "cores.h"
 #include "overlay.h"
 #include "init.h"
@@ -77,8 +79,10 @@ const char *BOARD_NAME = "unknown";
 
 // Override system printf() to send to FPGA
 int __attribute__((weak)) putchar(int ch) {
+    taskENTER_CRITICAL();
     fpga_tx_header(0x05, 2);
     fpga_tx_byte(ch);
+    taskEXIT_CRITICAL();
     return ch;
 }
 
@@ -199,11 +203,13 @@ static void send_hid_to_core(void) {
         uint16_t joy1=0, joy2=0, hid1=0, hid2=0;    
         get_joypad_states(&joy1, &joy2, &hid1, &hid2);
         if (first || hid1 != hid1_old || hid2 != hid2_old) {    // send HID if changed
+            taskENTER_CRITICAL();
             fpga_tx_header(0x09, 5);
             fpga_tx_byte(hid1 >> 8);
             fpga_tx_byte(hid1 & 0xff);
             fpga_tx_byte(hid2 >> 8);
             fpga_tx_byte(hid2 & 0xff);
+            taskEXIT_CRITICAL();
             hid1_old = hid1;
             hid2_old = hid2;
             first = false;
@@ -278,8 +284,8 @@ int joy_choice(int start_line, int len, int *active, int overlay_key_code) {
 // Receive joypad updates and other UART responses from the FPGA
 static void uart1_rx_task(void *pvParameters)
 {
-    uint8_t buffer[5];
-    uint8_t pos = 0;
+    uint8_t buffer[15];
+    uint16_t pos = 0;
     uint8_t type = 0;
     uint16_t len = 0;
     
@@ -357,10 +363,12 @@ static void uart1_rx_task(void *pvParameters)
                         UINT br;
                         f_lseek(&f_floppy[drive], sector * 512);
                         if (f_read(&f_floppy[drive], fbuf, 512, &br) == FR_OK) {
+                            taskENTER_CRITICAL();
                             fpga_tx_header(0x0a, br+1);
                             for (UINT i = 0; i < br; i++) {
                                 fpga_tx_byte(fbuf[i]);
                             }
+                            taskEXIT_CRITICAL();
                         } else {
                             overlay_status("Failed to read floppy");
                         }
@@ -369,6 +377,28 @@ static void uart1_rx_task(void *pvParameters)
                 } else
                     pos++;
 
+            } else if (type == FPGA_EXT_COMMAND) {
+                const uint16_t payload_length = len > 0 ? len - 1 : 0;
+                if (pos - 4 < static_cast<uint16_t>(sizeof(buffer))) {
+                    buffer[pos - 4] = ch;
+                }
+                if (pos == len + 2) {
+                    fpga_debug_handle_response(buffer, payload_length);
+                    pos = 0;
+                } else {
+                    pos++;
+                }
+            } else if (type == FPGA_STREAM_COMMAND) {
+                const uint16_t payload_length = len > 0 ? len - 1 : 0;
+                if (pos - 4 < static_cast<uint16_t>(sizeof(buffer))) {
+                    buffer[pos - 4] = ch;
+                }
+                if (pos == len + 2) {
+                    fpga_stream_handle_response(buffer, payload_length);
+                    pos = 0;
+                } else {
+                    pos++;
+                }
             } else {
                 pos = 0; // Reset if we get out of sync
             }
@@ -568,6 +598,8 @@ int main(void)
 
     // Create mutex for joypad states
     state_mutex = xSemaphoreCreateMutex();
+    fpga_debug_init();
+    fpga_stream_init();
 
     overlay_status("Initializing SDH...");
     fatfs_sdh_driver_register();        // calls SDH_Init()

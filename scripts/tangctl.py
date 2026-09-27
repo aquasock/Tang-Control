@@ -77,11 +77,11 @@ def synchronize_port(port):
     raise RuntimeError("could not synchronize with the TangCore command channel")
 
 
-def run_command(port, command):
+def run_command(port, command, timeout=5):
     lines = []
     port.write(command.encode("ascii") + b"\n")
     while True:
-        line = read_line(port)
+        line = read_line(port, timeout=timeout)
         if line == "OK":
             return lines
         if line.startswith("ERR"):
@@ -322,6 +322,17 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("ping")
     subparsers.add_parser("status")
+    subparsers.add_parser("caps")
+    peek = subparsers.add_parser("peek")
+    peek.add_argument("address", type=lambda value: int(value, 0))
+    peek.add_argument("count", nargs="?", type=int, default=1)
+    poke = subparsers.add_parser("poke")
+    poke.add_argument("address", type=lambda value: int(value, 0))
+    poke.add_argument("value", type=lambda value: int(value, 0))
+    baud = subparsers.add_parser("baud")
+    baud.add_argument("rate", type=int, choices=(2, 5), help="Mbps")
+    stream = subparsers.add_parser("stream")
+    stream.add_argument("remote", help="path relative to the SD-card root")
     benchmark = subparsers.add_parser("bench")
     benchmark.add_argument("--size", type=int, default=8 * 1024 * 1024)
     upload = subparsers.add_parser("put")
@@ -352,6 +363,19 @@ def main():
         elif args.command in ("rm", "mkdir"):
             validate_remote_path(args.remote)
             run_command(port, f"{args.command} {args.remote}")
+        elif args.command == "peek":
+            if not 0 <= args.address <= 0xFFFFFFFF or not 1 <= args.count <= 64:
+                raise RuntimeError("address must be 32-bit and count must be 1..64")
+            run_command(port, f"peek 0x{args.address:08x} {args.count}")
+        elif args.command == "poke":
+            if not 0 <= args.address <= 0xFFFFFFFF or not 0 <= args.value <= 0xFFFFFFFF:
+                raise RuntimeError("address and value must be 32-bit")
+            run_command(port, f"poke 0x{args.address:08x} 0x{args.value:08x}")
+        elif args.command == "baud":
+            run_command(port, f"baud {args.rate}")
+        elif args.command == "stream":
+            validate_remote_path(args.remote)
+            run_command(port, f"stream {args.remote}", timeout=600)
         else:
             run_command(port, args.command)
     return 0

@@ -61,6 +61,12 @@ should be overridden for distributed builds.
 ```bash
 python3 scripts/tangctl.py ping
 python3 scripts/tangctl.py status
+python3 scripts/tangctl.py caps
+python3 scripts/tangctl.py peek 0x00000000 8
+python3 scripts/tangctl.py poke 0x00000020 0x12345678
+python3 scripts/tangctl.py baud 5
+python3 scripts/tangctl.py baud 2
+python3 scripts/tangctl.py stream music/test.wav
 python3 scripts/tangctl.py bench --size 8388608
 python3 scripts/tangctl.py put build/my-core.bin cores/console138k/my-core.bin
 python3 scripts/tangctl.py get cores/console138k/my-core.bin ./my-core.bin
@@ -102,6 +108,14 @@ python3 scripts/tangctl.py --vid 0x1234 --pid 0x5678 status
 `flash_usb_console138k.ini` programs only the TangCore application at flash
 offset `0x40000`; it intentionally leaves the board-specific first-stage image
 at offset zero untouched.
+
+The optional FPGA development channel is documented in
+[`docs/extended-control-protocol.md`](docs/extended-control-protocol.md).
+`peek` and `poke` only work with a core that implements that protocol; their
+address map belongs to the core rather than Tang-Control.
+`stream` reads from the console's SD card and uses acknowledged 1024-byte
+frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
+2 Mbps rate afterward.
 
 Acknowledgements
 * JTAG FPGA programming logic based on [openFPGALoader](https://github.com/trabucayre/openFPGALoader)

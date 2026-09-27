@@ -23,6 +23,9 @@ extern "C" {
 }
 
 #include "usb_config.h"
+#include "fpga_debug.h"
+#include "fpga_stream.h"
+#include "init.h"
 
 extern const char *BOARD_NAME;
 extern int16_t active_core;
@@ -30,6 +33,10 @@ extern bool core_running;
 extern const char *drv;
 
 namespace {
+
+bool valid_remote_path(const char *path);
+bool make_sd_path(char *destination, size_t capacity, const char *path,
+                  const char *suffix = "");
 
 constexpr uint8_t CDC_IN_EP = 0x81;
 constexpr uint8_t CDC_OUT_EP = 0x02;
@@ -265,10 +272,257 @@ void print_status()
                static_cast<unsigned long long>(bflb_mtimer_get_time_ms()));
     cdc_printf("active_core: %d\r\n", active_core);
     cdc_printf("core_running: %s\r\n", core_running ? "yes" : "no");
+    cdc_printf("fpga_uart_baud: %u\r\n",
+               static_cast<unsigned>(fpga_uart_get_baud()));
     cdc_printf("usb_rx_bytes: %llu\r\n",
                static_cast<unsigned long long>(rx_total));
     cdc_printf("usb_rx_dropped: %u\r\n", static_cast<unsigned>(rx_dropped));
+    fpga_debug_stats stats;
+    fpga_debug_get_stats(&stats);
+    cdc_printf("fpga_requests: %u\r\n", static_cast<unsigned>(stats.requests));
+    cdc_printf("fpga_responses: %u\r\n", static_cast<unsigned>(stats.responses));
+    cdc_printf("fpga_timeouts: %u\r\n", static_cast<unsigned>(stats.timeouts));
+    cdc_printf("fpga_crc_errors: %u\r\n", static_cast<unsigned>(stats.crc_errors));
+    cdc_printf("fpga_malformed: %u\r\n", static_cast<unsigned>(stats.malformed));
+    cdc_printf("fpga_unexpected: %u\r\n", static_cast<unsigned>(stats.unexpected));
     cdc_print("OK\r\n");
+}
+
+bool parse_u32(const char *text, uint32_t &value, const char **end_out = nullptr)
+{
+    if (text == nullptr || *text == '\0' || *text == '-') {
+        return false;
+    }
+    char *end = nullptr;
+    const unsigned long parsed = strtoul(text, &end, 0);
+    if (end == text || parsed > 0xfffffffful) {
+        return false;
+    }
+    value = static_cast<uint32_t>(parsed);
+    if (end_out != nullptr) {
+        *end_out = end;
+    } else if (*end != '\0') {
+        return false;
+    }
+    return true;
+}
+
+bool run_fpga_request(uint8_t opcode, uint32_t address, uint32_t data,
+                      fpga_debug_result &result)
+{
+    if (!fpga_debug_request(opcode, address, data, &result)) {
+        cdc_print("ERR FPGA debug request timed out\r\n");
+        return false;
+    }
+    if (result.status != 0) {
+        cdc_printf("ERR FPGA debug status=%u\r\n",
+                   static_cast<unsigned>(result.status));
+        return false;
+    }
+    return true;
+}
+
+void run_capabilities()
+{
+    fpga_debug_result result;
+    if (!run_fpga_request(FPGA_EXT_CAPABILITIES, 0, 0, result)) {
+        return;
+    }
+    cdc_printf("FPGA protocol=%u capabilities=0x%08x\r\nOK\r\n",
+               FPGA_EXT_VERSION, static_cast<unsigned>(result.data));
+}
+
+void run_peek(const char *arguments)
+{
+    uint32_t address;
+    const char *end = nullptr;
+    if (!parse_u32(arguments, address, &end)) {
+        cdc_print("ERR usage: peek <address> [count]\r\n");
+        return;
+    }
+    uint32_t count = 1;
+    if (*end != '\0') {
+        while (*end == ' ') {
+            ++end;
+        }
+        if (!parse_u32(end, count) || count == 0 || count > 64) {
+            cdc_print("ERR count must be 1..64\r\n");
+            return;
+        }
+    }
+    if ((address & 3u) != 0 || address > 0xffffffffu - (count - 1u) * 4u) {
+        cdc_print("ERR address must be aligned and range must not wrap\r\n");
+        return;
+    }
+    for (uint32_t index = 0; index < count; ++index) {
+        fpga_debug_result result;
+        const uint32_t current = address + index * 4u;
+        if (!run_fpga_request(FPGA_EXT_READ32, current, 0, result)) {
+            return;
+        }
+        cdc_printf("0x%08x: 0x%08x\r\n", static_cast<unsigned>(current),
+                   static_cast<unsigned>(result.data));
+    }
+    cdc_print("OK\r\n");
+}
+
+void run_poke(const char *arguments)
+{
+    uint32_t address;
+    uint32_t value;
+    const char *end = nullptr;
+    if (!parse_u32(arguments, address, &end)) {
+        cdc_print("ERR usage: poke <address> <value>\r\n");
+        return;
+    }
+    while (*end == ' ') {
+        ++end;
+    }
+    if (!parse_u32(end, value) || (address & 3u) != 0) {
+        cdc_print("ERR usage: poke <aligned-address> <value>\r\n");
+        return;
+    }
+    fpga_debug_result result;
+    if (!run_fpga_request(FPGA_EXT_WRITE32, address, value, result)) {
+        return;
+    }
+    cdc_printf("WROTE 0x%08x: 0x%08x\r\nOK\r\n",
+               static_cast<unsigned>(address), static_cast<unsigned>(value));
+}
+
+void run_baud(const char *argument)
+{
+    uint32_t rate;
+    if (!parse_u32(argument, rate) || (rate != 2 && rate != 5)) {
+        cdc_print("ERR usage: baud <2|5>\r\n");
+        return;
+    }
+    rate *= 1000000u;
+    if (!fpga_debug_set_baud(rate)) {
+        cdc_print("ERR FPGA baud negotiation failed\r\n");
+        return;
+    }
+    cdc_printf("BAUD %u\r\nOK\r\n", static_cast<unsigned>(rate));
+}
+
+bool send_stream_frame(uint8_t flags, uint16_t stream_id, uint32_t offset,
+                       const uint8_t *data, uint16_t length,
+                       uint32_t expected_next)
+{
+    fpga_stream_result result;
+    if (!fpga_stream_send(flags, stream_id, offset, data, length, &result)) {
+        cdc_print("ERR FPGA stream response timed out\r\n");
+        return false;
+    }
+    if (result.status != 0 || result.next_offset != expected_next) {
+        cdc_printf("ERR FPGA stream status=%u next=%u expected=%u\r\n",
+                   static_cast<unsigned>(result.status),
+                   static_cast<unsigned>(result.next_offset),
+                   static_cast<unsigned>(expected_next));
+        return false;
+    }
+    return true;
+}
+
+void run_stream(const char *path)
+{
+    if (!valid_remote_path(path)) {
+        cdc_print("ERR invalid remote path\r\n");
+        return;
+    }
+    if (strcmp(drv, "sd:") != 0) {
+        cdc_print("ERR SD card is not mounted\r\n");
+        return;
+    }
+
+    fpga_debug_result capabilities;
+    if (!run_fpga_request(FPGA_EXT_CAPABILITIES, 0, 0, capabilities) ||
+        (capabilities.data & FPGA_EXT_CAP_STREAM) == 0) {
+        cdc_print("ERR active core does not support streaming\r\n");
+        return;
+    }
+
+    char full_path[192];
+    if (!make_sd_path(full_path, sizeof(full_path), path)) {
+        cdc_print("ERR remote path is too long\r\n");
+        return;
+    }
+    FIL file;
+    FRESULT file_result = f_open(&file, full_path, FA_READ);
+    if (file_result != FR_OK) {
+        cdc_printf("ERR open failed fatfs=%u\r\n",
+                   static_cast<unsigned>(file_result));
+        return;
+    }
+    if (f_size(&file) > 0xffffffffu) {
+        f_close(&file);
+        cdc_print("ERR stream files are limited to 4 GiB\r\n");
+        return;
+    }
+
+    const bool can_accelerate =
+        (capabilities.data & FPGA_EXT_CAP_BAUD_SWITCH) != 0;
+    bool using_fast_baud = false;
+    if (can_accelerate) {
+        using_fast_baud = fpga_debug_set_baud(5000000);
+        if (!using_fast_baud) {
+            f_close(&file);
+            cdc_print("ERR could not negotiate 5 Mbps stream rate\r\n");
+            return;
+        }
+    }
+
+    static uint16_t next_stream_id = 1;
+    const uint16_t stream_id = next_stream_id++;
+    uint32_t offset = 0;
+    uint32_t crc = 0xffffffffu;
+    bool success = send_stream_frame(FPGA_STREAM_START, stream_id, 0,
+                                     nullptr, 0, 0);
+    const uint64_t started = bflb_mtimer_get_time_ms();
+
+    while (success) {
+        UINT count = 0;
+        file_result = f_read(&file, file_io_buffer, FPGA_STREAM_MAX_DATA, &count);
+        if (file_result != FR_OK || count == 0) {
+            break;
+        }
+        crc = crc32_update(crc, file_io_buffer, count);
+        success = send_stream_frame(FPGA_STREAM_DATA, stream_id, offset,
+                                    file_io_buffer, static_cast<uint16_t>(count),
+                                    offset + count);
+        offset += count;
+    }
+    if (file_result != FR_OK) {
+        cdc_printf("ERR read failed fatfs=%u\r\n",
+                   static_cast<unsigned>(file_result));
+        success = false;
+    }
+    if (success) {
+        success = send_stream_frame(FPGA_STREAM_END, stream_id, offset,
+                                    nullptr, 0, offset);
+    } else {
+        fpga_stream_result ignored;
+        fpga_stream_send(FPGA_STREAM_CANCEL, stream_id, offset, nullptr, 0,
+                         &ignored);
+    }
+
+    const FRESULT close_result = f_close(&file);
+    if (using_fast_baud && !fpga_debug_set_baud(2000000)) {
+        cdc_print("ERR failed to restore 2 Mbps FPGA rate\r\n");
+        return;
+    }
+    if (!success || close_result != FR_OK) {
+        if (close_result != FR_OK)
+            cdc_printf("ERR close failed fatfs=%u\r\n",
+                       static_cast<unsigned>(close_result));
+        return;
+    }
+
+    const uint64_t elapsed = bflb_mtimer_get_time_ms() - started;
+    cdc_printf("STREAM bytes=%u ms=%llu crc32=%08x\r\nOK\r\n",
+               static_cast<unsigned>(offset),
+               static_cast<unsigned long long>(elapsed),
+               static_cast<unsigned>(~crc));
 }
 
 void run_benchmark(uint32_t expected)
@@ -329,7 +583,7 @@ bool valid_remote_path(const char *path)
 }
 
 bool make_sd_path(char *destination, size_t capacity, const char *path,
-                  const char *suffix = "")
+                  const char *suffix)
 {
     const int count = snprintf(destination, capacity, "sd:/%s%s", path, suffix);
     return count > 0 && static_cast<size_t>(count) < capacity;
@@ -685,6 +939,11 @@ void execute_command(char *line)
         cdc_print("help              show commands\r\n"
                   "ping              verify command channel\r\n"
                   "status            show TangCore state\r\n"
+                  "caps              query FPGA transport capabilities\r\n"
+                  "peek <addr> [n]   read one or more FPGA debug words\r\n"
+                  "poke <addr> <val> write an FPGA debug word\r\n"
+                  "baud <2|5>        negotiate FPGA UART rate in Mbps\r\n"
+                  "stream <path>     stream an SD file to the active core\r\n"
                   "bench <bytes>     receive raw data and report speed/CRC\r\n"
                   "put <size> <crc> <path>  upload a file to SD\r\n"
                   "get <path>        download a file from SD\r\n"
@@ -697,6 +956,16 @@ void execute_command(char *line)
         cdc_print("PONG\r\nOK\r\n");
     } else if (strcmp(line, "status") == 0) {
         print_status();
+    } else if (strcmp(line, "caps") == 0) {
+        run_capabilities();
+    } else if (strncmp(line, "peek ", 5) == 0) {
+        run_peek(line + 5);
+    } else if (strncmp(line, "poke ", 5) == 0) {
+        run_poke(line + 5);
+    } else if (strncmp(line, "baud ", 5) == 0) {
+        run_baud(line + 5);
+    } else if (strncmp(line, "stream ", 7) == 0) {
+        run_stream(line + 7);
     } else if (strncmp(line, "bench ", 6) == 0) {
         char *parse_end = nullptr;
         const unsigned long size = strtoul(line + 6, &parse_end, 0);

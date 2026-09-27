@@ -8,6 +8,50 @@ extern "C" {
 
 extern "C" void bflb_uart_set_console(struct bflb_device_s *dev);
 
+namespace {
+uint32_t fpga_uart_baud = 2000000;
+bool fpga_uart_initialized = false;
+
+bool configure_fpga_uart(uint32_t baudrate)
+{
+    struct bflb_uart_config_s uart1_cfg = {
+        .baudrate = baudrate,
+        .direction = UART_DIRECTION_TXRX,
+        .data_bits = UART_DATA_BITS_8,
+        .stop_bits = UART_STOP_BITS_1,
+        .parity    = UART_PARITY_NONE,
+        .bit_order = UART_LSB_FIRST,
+        .flow_ctrl = 0,
+        .tx_fifo_threshold = 7,
+        .rx_fifo_threshold = 7,
+    };
+    if (fpga_uart_initialized) {
+        bflb_uart_deinit(uart1_dev);
+    }
+    bflb_uart_init(uart1_dev, &uart1_cfg);
+    bflb_uart_set_console(uart1_dev);
+    fpga_uart_initialized = true;
+    fpga_uart_baud = baudrate;
+    return true;
+}
+}
+
+bool fpga_uart_set_baud(uint32_t baudrate)
+{
+    if (baudrate != 2000000 && baudrate != 5000000) {
+        return false;
+    }
+    taskENTER_CRITICAL();
+    const bool result = configure_fpga_uart(baudrate);
+    taskEXIT_CRITICAL();
+    return result;
+}
+
+uint32_t fpga_uart_get_baud()
+{
+    return fpga_uart_baud;
+}
+
 void init_gpio_and_uart() {
     // turn of UART0
     // uart0_dev = bflb_device_get_by_name("uart0");
@@ -50,30 +94,15 @@ void init_gpio_and_uart() {
     bflb_gpio_uart_init(gpio_dev, GPIO_PIN_27, GPIO_UART_FUNC_UART1_RX);    // JTAG connector pin 7 (pin8 is GND, pin1 is VCC)
 #endif
 
-    /* Set up Core control UART parameters */
-    struct bflb_uart_config_s uart1_cfg = {
-        // .baudrate = 1000000,
-#if defined(TANG_CONSOLE60K) || defined(TANG_CONSOLE138K)
-        .baudrate = 2000000,
-#else
-        // all other boards have 26Mhz XTAL
-        .baudrate = 2000000 * 40 / 26,
-#endif
-        .direction = UART_DIRECTION_TXRX,
-        .data_bits = UART_DATA_BITS_8,
-        .stop_bits = UART_STOP_BITS_1,
-        .parity    = UART_PARITY_NONE,
-        .bit_order = UART_LSB_FIRST,
-        .flow_ctrl = 0,  /* No CTS/RTS flow control */
-        .tx_fifo_threshold = 7,
-        .rx_fifo_threshold = 7,
-    };
     /* Get handle to UART1 */
     uart1_dev = bflb_device_get_by_name("uart1");
-    /* Initialize UART1 with the config */
-    bflb_uart_init(uart1_dev, &uart1_cfg);
-
-    bflb_uart_set_console(uart1_dev);       // for debug
+    /* Initialize UART1 at the protocol's safe rate. */
+#if defined(TANG_CONSOLE60K) || defined(TANG_CONSOLE138K)
+    configure_fpga_uart(2000000);
+#else
+    // all other boards have 26MHz XTAL
+    configure_fpga_uart(2000000 * 40 / 26);
+#endif
 
     // set JTAG pins to high-Z
     // interrupts masked, SWGPIO mode, output off, input off, schmitt ON

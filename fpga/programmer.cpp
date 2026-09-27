@@ -15,6 +15,8 @@
 #include "task.h"
 #include "utils.h"
 #include "overlay.h"
+#include "fpga_debug.h"
+#include "init.h"
 
 #define JTAG_MAX_CHAIN 8
 
@@ -956,6 +958,15 @@ bool fpga_program(const char *fname) {
     //     overlay_printf("mount fail, res:%d\r\n", res_sd);
     //     return false;
     // }
+    // Every core starts at the legacy-safe 2 Mbps rate. If an extended core
+    // negotiated a faster session, return both ends to 2 Mbps before JTAG
+    // replaces it.
+    if (fpga_uart_get_baud() != 2000000) {
+        fpga_debug_set_baud(2000000);
+        if (fpga_uart_get_baud() != 2000000)
+            fpga_uart_set_baud(2000000);
+    }
+
     int len = get_file_size(fname);
     overlay_status("Writing %u bytes...", len);
 
