@@ -66,6 +66,7 @@ should be overridden for distributed builds.
 ```bash
 python3 scripts/tangctl.py ping
 python3 scripts/tangctl.py status
+python3 scripts/tangctl.py rxstats --reset
 python3 scripts/tangctl.py caps
 python3 scripts/tangctl.py peek 0x00000000 8
 python3 scripts/tangctl.py poke 0x00000020 0x12345678
@@ -87,6 +88,14 @@ the client fails if the final size or CRC differs from the local file. Downloads
 likewise use a temporary local file and replace the destination only after the
 device-reported size and CRC match. `rm` can remove files or empty directories;
 it does not recursively delete directory trees.
+
+`rxstats` reports the health of the BL616's FPGA UART receive path: bytes and
+joypad frames received, hardware RX FIFO overflows and high-water mark (the FIFO
+holds 32 bytes), bytes skipped while resynchronizing, unknown frame types, and
+the longest gap between FIFO polls. `--reset` zeroes the counters after
+printing, so a reset before a test isolates its results. `status` includes the
+same counters. A rising overflow count means FPGA replies or controller input
+were lost.
 
 To build this variant:
 
