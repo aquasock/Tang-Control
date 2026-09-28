@@ -26,6 +26,7 @@ extern "C" {
 #include "fpga_debug.h"
 #include "fpga_stream.h"
 #include "fpga_file_stream.h"
+#include "firmware_update.h"
 #include "init.h"
 #include "utils.h"
 
@@ -307,6 +308,18 @@ void print_status()
     cdc_printf("fpga_malformed: %u\r\n", static_cast<unsigned>(stats.malformed));
     cdc_printf("fpga_unexpected: %u\r\n", static_cast<unsigned>(stats.unexpected));
     print_rx_stats();
+    const FwRunningImage &image = fw_running_image();
+    cdc_printf("app_offset: 0x%08x\r\n", static_cast<unsigned>(image.offset));
+    if (image.valid) {
+        cdc_printf("app_size: %u\r\n", static_cast<unsigned>(image.size));
+        cdc_print("app_sha256: ");
+        for (uint8_t byte : image.sha256) {
+            cdc_printf("%02x", byte);
+        }
+        cdc_print("\r\n");
+    } else {
+        cdc_print("app_sha256: unknown\r\n");
+    }
     cdc_print("OK\r\n");
 }
 
@@ -704,6 +717,64 @@ void run_remove(const char *path)
     cdc_print("REMOVED\r\nOK\r\n");
 }
 
+bool parse_sha256(const char *text, uint8_t digest[32])
+{
+    if (strlen(text) != 64) {
+        return false;
+    }
+    for (unsigned i = 0; i < 32; ++i) {
+        uint8_t byte = 0;
+        for (unsigned nibble = 0; nibble < 2; ++nibble) {
+            const char c = text[2 * i + nibble];
+            uint8_t value;
+            if (c >= '0' && c <= '9') value = static_cast<uint8_t>(c - '0');
+            else if (c >= 'a' && c <= 'f') value = static_cast<uint8_t>(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') value = static_cast<uint8_t>(c - 'A' + 10);
+            else return false;
+            byte = static_cast<uint8_t>((byte << 4) | value);
+        }
+        digest[i] = byte;
+    }
+    return true;
+}
+
+void announce_firmware_commit()
+{
+    // The vendor loader starts its USB debugger after a software reset and
+    // TangCore only after power-on, so the user must replug USB.
+    cdc_print("OK committing firmware; replug USB after the reset\r\n");
+    // Let the host collect the reply before interrupts stop for the commit.
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+
+void run_firmware_update(char *arguments)
+{
+    char *separator = strrchr(arguments, ' ');
+    uint8_t expected[32];
+    if (separator == nullptr || !parse_sha256(separator + 1, expected)) {
+        cdc_print("ERR usage: fwupdate <path> <sha256>\r\n");
+        return;
+    }
+    *separator = '\0';
+    if (!valid_remote_path(arguments)) {
+        cdc_print("ERR invalid remote path\r\n");
+        return;
+    }
+    if (!file_operations_ready()) {
+        return;
+    }
+    char full_path[192];
+    if (!make_sd_path(full_path, sizeof(full_path), arguments)) {
+        cdc_print("ERR remote path is too long\r\n");
+        return;
+    }
+    char error[96];
+    if (!fw_update_from_file(full_path, expected, announce_firmware_commit,
+                             error, sizeof(error))) {
+        cdc_printf("ERR firmware update: %s\r\n", error);
+    }
+}
+
 void run_mkdir(const char *path)
 {
     if (!valid_remote_path(path)) {
@@ -884,6 +955,7 @@ void execute_command(char *line)
                   "rm <path>         remove an SD file or empty directory\r\n"
                   "mkdir <path>      create an SD directory\r\n"
                   "crc <path>        checksum a file on SD\r\n"
+                  "fwupdate <path> <sha256>  install a BL616 image from SD\r\n"
                   "OK\r\n");
     } else if (strcmp(line, "ping") == 0) {
         cdc_print("PONG\r\nOK\r\n");
@@ -924,6 +996,8 @@ void execute_command(char *line)
         run_list(line + 3);
     } else if (strncmp(line, "rm ", 3) == 0) {
         run_remove(line + 3);
+    } else if (strncmp(line, "fwupdate ", 9) == 0) {
+        run_firmware_update(line + 9);
     } else if (strncmp(line, "mkdir ", 6) == 0) {
         run_mkdir(line + 6);
     } else if (strncmp(line, "put ", 4) == 0) {

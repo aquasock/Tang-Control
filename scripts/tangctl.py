@@ -5,10 +5,12 @@
 """TangCore USB CDC console and transfer benchmark client."""
 
 import argparse
+import hashlib
 import os
 import re
 import sys
 import tempfile
+import termios
 import time
 import zlib
 
@@ -21,6 +23,12 @@ USB_PID = 0x6160
 MIB = 1024 * 1024
 CRC_VERIFY_BASE_TIMEOUT = 10
 CRC_VERIFY_MIN_BYTES_PER_SECOND = MIB
+# Must match utils/firmware_image.h.
+FW_APP_MAX_SIZE = 0x80000
+FW_BOOT_HEADER_SIZE = 0x100
+FW_HEADER_REGION = 0x1000
+FW_REMOTE_PATH = "tangcore-firmware.bin"
+FW_RECONNECT_TIMEOUT = 120
 
 
 def find_port(vid=USB_VID, pid=USB_PID):
@@ -323,6 +331,82 @@ def run_get(port, remote_path, local_path):
     print(f"verified: bytes={size} crc32={crc:08x} ({mib_s:.2f} MiB/s)")
 
 
+def check_boot_image(data):
+    """Apply the device's BL616 application-image checks before uploading."""
+    if len(data) < FW_BOOT_HEADER_SIZE or data[0:4] != b"BFNP" or \
+            data[8:12] != b"FCFG" or data[0x64:0x68] != b"PCFG":
+        raise RuntimeError("not a BL616 boot image")
+    header = data[:FW_BOOT_HEADER_SIZE]
+    if zlib.crc32(header[:-4]) != int.from_bytes(header[-4:], "little"):
+        raise RuntimeError("boot header CRC mismatch")
+    body = int.from_bytes(header[0x84:0x88], "little")
+    if body == 0 or body > FW_APP_MAX_SIZE - FW_HEADER_REGION:
+        raise RuntimeError("image length out of range")
+    if FW_HEADER_REGION + body != len(data):
+        raise RuntimeError("file size differs from boot header")
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_status(port):
+    fields = {}
+    port.write(b"status\n")
+    while True:
+        line = read_line(port, timeout=10)
+        if line == "OK":
+            return fields
+        if line.startswith("ERR"):
+            raise RuntimeError(line)
+        key, separator, value = line.partition(": ")
+        if separator:
+            fields[key] = value
+
+
+def wait_for_device(vid, pid, timeout):
+    """Reopen the console once the device re-enumerates after its reset."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            return open_port(find_port(vid, pid))
+        except (OSError, RuntimeError, TimeoutError, termios.error,
+                serial.SerialException):
+            # The old port can linger briefly while the device resets.
+            time.sleep(0.5)
+    return None
+
+
+def run_firmware(path, local_path, vid, pid):
+    with open(local_path, "rb") as image:
+        data = image.read()
+    digest = check_boot_image(data)
+    print(f"image: {local_path} bytes={len(data)} sha256={digest}")
+    with open_port(path) as port:
+        if read_status(port).get("app_sha256") == digest:
+            print("device already runs this image; reinstalling")
+        run_put(port, local_path, FW_REMOTE_PATH)
+        port.write(f"fwupdate {FW_REMOTE_PATH} {digest}\n".encode("ascii"))
+        while True:
+            line = read_line(port, timeout=120)
+            if line.startswith("ERR"):
+                raise RuntimeError(line)
+            if line.startswith("OK committing"):
+                print(line)
+                break
+    # After its software reset the BL616 vendor loader starts the Sipeed USB
+    # debugger; TangCore runs again only after a power-on.
+    print("unplug and replug USB now to start the new firmware")
+    time.sleep(3)
+    port = wait_for_device(vid, pid, FW_RECONNECT_TIMEOUT)
+    if port is None:
+        raise TimeoutError(
+            "TangCore did not reconnect; replug USB and run 'tangctl.py status' "
+            f"to check app_sha256={digest}")
+    with port:
+        running = read_status(port).get("app_sha256")
+    if running != digest:
+        raise RuntimeError(f"device reports app_sha256={running}, expected {digest}")
+    print(f"verified: device runs sha256={digest}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", help="serial device; auto-detected when omitted")
@@ -366,9 +450,15 @@ def main():
     remove.add_argument("remote")
     make_directory = subparsers.add_parser("mkdir")
     make_directory.add_argument("remote")
+    firmware = subparsers.add_parser(
+        "firmware", help="install a BL616 application image without BOOT mode")
+    firmware.add_argument("image", help="for example build/build_out/tangcore_bl616.bin")
     args = parser.parse_args()
 
     path = args.port or find_port(args.vid, args.pid)
+    if args.command == "firmware":
+        run_firmware(path, args.image, args.vid, args.pid)
+        return 0
     with open_port(path) as port:
         if args.command == "bench":
             run_benchmark(port, args.size)

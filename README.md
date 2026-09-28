@@ -123,6 +123,31 @@ python3 scripts/tangctl.py --vid 0x1234 --pid 0x5678 status
 offset `0x40000`; it intentionally leaves the board-specific first-stage image
 at offset zero untouched.
 
+### Firmware updates without BOOT mode
+
+Once a CDC build with `fwupdate` is installed, later builds can be installed
+from the TangCore main menu without the BOOT button or the flash tool:
+
+```bash
+python3 scripts/tangctl.py firmware build/build_out/tangcore_bl616.bin
+```
+
+The client checks the BL616 boot header and SHA-256, uploads the image to the
+SD card, and asks the BL616 to install it. The BL616 copies the image to a
+staging region and verifies it there. Then, running from RAM with interrupts
+disabled, it rewrites the application at `0x40000`, checking each sector, and
+resets. The vendor loader at offset zero starts its Sipeed USB debugger after a
+software reset and starts TangCore only after power-on. Unplug and replug USB
+when prompted; the client then confirms that `status` reports the new
+`app_sha256`.
+
+Flash layout, from a full readback of a Console 138K: the vendor loader
+occupies `0x000000`-`0x01bfff`, the application may use `0x040000`-`0x0bffff`,
+staging uses `0x100000`-`0x17ffff`, and a vendor data record at `0x200000` is
+never touched. If power is lost while the application is being rewritten,
+recover with BOOT mode and `flash_usb_console138k.ini`; the vendor loader is
+never modified.
+
 The optional FPGA development channel is documented in
 [`docs/extended-control-protocol.md`](docs/extended-control-protocol.md).
 `peek` and `poke` only work with a core that implements that protocol; their

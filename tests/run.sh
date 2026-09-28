@@ -34,4 +34,10 @@ g++ -std=c++17 -Wall -Wextra -Werror \
     -o "$build_dir/fpga_ext_frame_test"
 
 "$build_dir/fpga_ext_frame_test"
+g++ -std=c++17 -Wall -Wextra -Werror \
+    -I"$repo_dir/utils" \
+    "$repo_dir/tests/firmware_image_test.cpp" \
+    -o "$build_dir/firmware_image_test"
+
+"$build_dir/firmware_image_test"
 python3 "$repo_dir/tests/tangctl_test.py"
