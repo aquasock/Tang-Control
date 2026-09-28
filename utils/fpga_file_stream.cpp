@@ -9,6 +9,7 @@ extern "C" {
 #include "bflb_mtimer.h"
 }
 
+#include "flac_stream_prefix.h"
 #include "fpga_debug.h"
 #include "fpga_stream.h"
 #include "init.h"
@@ -49,6 +50,14 @@ bool cancellation_requested(fpga_file_stream_cancel cancel, void *context)
     return cancel != nullptr && cancel(context);
 }
 
+bool read_at(FIL &file, uint32_t offset, uint8_t *buffer, size_t length)
+{
+    UINT count = 0;
+    return f_lseek(&file, offset) == FR_OK &&
+           f_read(&file, buffer, static_cast<UINT>(length), &count) == FR_OK &&
+           count == length;
+}
+
 } // namespace
 
 void fpga_file_stream_init(void)
@@ -56,9 +65,21 @@ void fpga_file_stream_init(void)
     file_stream_mutex = xSemaphoreCreateMutex();
 }
 
+uint16_t fpga_file_stream_reserve_id(void)
+{
+    taskENTER_CRITICAL();
+    const uint16_t id = next_stream_id++;
+    if (next_stream_id == 0) {
+        next_stream_id = 1;
+    }
+    taskEXIT_CRITICAL();
+    return id;
+}
+
 fpga_file_stream_result fpga_file_stream(const char *path,
                                          fpga_file_stream_cancel cancel,
-                                         void *cancel_context)
+                                         void *cancel_context,
+                                         const fpga_file_stream_options &options)
 {
     fpga_file_stream_result summary = {};
     summary.status = fpga_file_stream_status::INVALID_ARGUMENT;
@@ -107,17 +128,40 @@ fpga_file_stream_result fpga_file_stream(const char *path,
         using_fast_baud = true;
     }
 
-    stream_id = next_stream_id++;
-    if (next_stream_id == 0) {
-        next_stream_id = 1;
-    }
+    stream_id = options.stream_id != 0 ? options.stream_id
+                                       : fpga_file_stream_reserve_id();
     if (!send_frame(FPGA_STREAM_START, stream_id, 0, nullptr, 0, 0, summary)) {
         summary.status = fpga_file_stream_status::TRANSPORT_FAILED;
         goto finish;
     }
     session_started = true;
 
-    while (!cancellation_requested(cancel, cancel_context)) {
+    if (options.reduce_flac_metadata) {
+        uint8_t prefix[FLAC_REDUCED_PREFIX_LENGTH];
+        uint32_t audio_offset = 0;
+        const bool reduced = flac_reduced_prefix(
+            [&file](uint32_t at, uint8_t *buffer, size_t length) {
+                return read_at(file, at, buffer, length);
+            },
+            f_size(&file), prefix, audio_offset);
+        summary.filesystem_status =
+            f_lseek(&file, reduced ? audio_offset : 0);
+        if (summary.filesystem_status != FR_OK) {
+            summary.status = fpga_file_stream_status::READ_FAILED;
+        } else if (reduced) {
+            memcpy(stream_buffer, prefix, sizeof(prefix));
+            crc = crc32_update(crc, stream_buffer, sizeof(prefix));
+            if (send_frame(FPGA_STREAM_DATA, stream_id, 0, stream_buffer,
+                           sizeof(prefix), sizeof(prefix), summary)) {
+                offset = sizeof(prefix);
+            } else {
+                summary.status = fpga_file_stream_status::TRANSPORT_FAILED;
+            }
+        }
+    }
+
+    while (summary.status == fpga_file_stream_status::INVALID_ARGUMENT &&
+           !cancellation_requested(cancel, cancel_context)) {
         UINT count = 0;
         summary.filesystem_status =
             f_read(&file, stream_buffer, sizeof(stream_buffer), &count);

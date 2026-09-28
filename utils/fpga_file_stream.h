@@ -32,8 +32,21 @@ struct fpga_file_stream_result {
 
 using fpga_file_stream_cancel = bool (*)(void *context);
 
+struct fpga_file_stream_options {
+    // Zero allocates the next session ID.  A caller that must recognize the
+    // session in core status (Phosphor's audible-stream register) reserves
+    // one first with fpga_file_stream_reserve_id().
+    uint16_t stream_id = 0;
+    // Send a native FLAC file as `fLaC`, STREAMINFO, and its audio frames,
+    // omitting metadata blocks the core would skip anyway.  The summary byte
+    // count and CRC then describe the transmitted stream, not the file.
+    bool reduce_flac_metadata = false;
+};
+
 void fpga_file_stream_init(void);
+uint16_t fpga_file_stream_reserve_id(void);
 fpga_file_stream_result fpga_file_stream(
     const char *path, fpga_file_stream_cancel cancel = nullptr,
-    void *cancel_context = nullptr);
+    void *cancel_context = nullptr,
+    const fpga_file_stream_options &options = {});
 const char *fpga_file_stream_status_text(fpga_file_stream_status status);

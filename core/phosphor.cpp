@@ -23,6 +23,8 @@ extern "C" {
 
 namespace {
 
+constexpr uint32_t PHOSPHOR_CORE_CAPABILITIES = 0x0000000c;
+constexpr uint32_t PHOSPHOR_CAP_GAPLESS = 1u << 7;
 constexpr uint32_t PHOSPHOR_AUDIO_STATUS = 0x0000005c;
 constexpr uint32_t PHOSPHOR_PLAYBACK_CONTROL = 0x00000078;
 constexpr uint32_t PHOSPHOR_UI_CONTROL = 0x0000007c;
@@ -33,6 +35,7 @@ constexpr uint32_t PHOSPHOR_UI_LENGTH_8 = 0x00000094;
 constexpr uint32_t PHOSPHOR_UI_ART_CONTROL = 0x00000098;
 constexpr uint32_t PHOSPHOR_UI_TEXT_BASE = 0x00000100;
 constexpr uint32_t PHOSPHOR_UI_ART_BASE = 0x00001000;
+constexpr uint32_t PHOSPHOR_AUDIBLE_STREAM = 0x000000a4;
 constexpr uint32_t PHOSPHOR_UI_COMMIT = 0x80000000;
 constexpr uint32_t PHOSPHOR_UI_WRITE_TIMEOUT_MS = 1500;
 constexpr uint16_t BUTTON_START = 0x0008;
@@ -42,6 +45,7 @@ constexpr uint16_t BUTTON_X = 0x0200;
 constexpr uint8_t PHOSPHOR_STATE_COMPLETE = 4;
 constexpr uint8_t PHOSPHOR_STATE_ERROR = 5;
 constexpr uint8_t PHOSPHOR_STATE_CANCELLED = 6;
+constexpr uint8_t PHOSPHOR_STATE_DRAINING = 7;
 constexpr size_t PLAYLIST_READ_SIZE = 512;
 constexpr uint32_t PLAYER_COMPLETE_TIMEOUT_MS = 5000;
 
@@ -81,6 +85,9 @@ struct player_shared_state {
     uint32_t ui_generation;
     PhosphorUiSnapshot ui_snapshot;
     std::string ui_media_path;
+    // Nonzero when the core plays sessions gaplessly: publish this track's
+    // display only once its stream is the one being heard.
+    uint16_t ui_stream_id;
 };
 
 player_shared_state player = {};
@@ -200,7 +207,7 @@ void set_paused(bool paused)
 
 void queue_ui_snapshot(const std::string &selection_name,
                        const std::vector<M3uEntry> &entries, size_t current,
-                       bool playlist, bool make_visible)
+                       bool playlist, bool make_visible, uint16_t stream_id)
 {
     const PhosphorUiSnapshot snapshot = phosphor_build_ui_snapshot(
         selection_name, entries, current, playlist);
@@ -210,6 +217,7 @@ void queue_ui_snapshot(const std::string &selection_name,
     player.ui_snapshot = snapshot;
     player.ui_media_path = entries.empty() ? std::string() : entries[current].path;
     player.ui_playlist = snapshot.playlist;
+    player.ui_stream_id = stream_id;
     if (make_visible) {
         player.ui_visible = true;
     }
@@ -226,8 +234,8 @@ uint32_t pack_lengths(const PhosphorUiSnapshot &snapshot, size_t first)
            snapshot.length[first + 3];
 }
 
-bool write_ui_snapshot(const PhosphorUiSnapshot &snapshot, uint32_t generation,
-                       bool block)
+// Fill the unpublished text bank; commit_ui_snapshot() makes it visible.
+bool write_ui_snapshot(const PhosphorUiSnapshot &snapshot, bool block)
 {
     // The nine text slots are contiguous 32-byte records in register space.
     constexpr size_t SLOT_WORDS = PHOSPHOR_UI_SLOT_BYTES / 4;
@@ -260,7 +268,11 @@ bool write_ui_snapshot(const PhosphorUiSnapshot &snapshot, uint32_t generation,
                              static_cast<uint32_t>(snapshot.length[8]) << 24)) {
         return false;
     }
+    return true;
+}
 
+bool commit_ui_snapshot(const PhosphorUiSnapshot &snapshot, uint32_t generation)
+{
     bool visible;
     bool latest;
     if (xSemaphoreTake(player.mutex, portMAX_DELAY) != pdTRUE) {
@@ -286,6 +298,8 @@ bool ui_generation_current(uint32_t generation)
     return current;
 }
 
+// Fill the inactive artwork bank.  Returns true without writing everything
+// when a newer track supersedes this one; the caller rechecks the generation.
 bool write_artwork(uint32_t generation, bool block)
 {
     // Abandon a superseded track between chunks.  The single-register path
@@ -308,9 +322,38 @@ bool write_artwork(uint32_t generation, bool block)
             vTaskDelay(1);
         }
     }
-    if (!ui_generation_current(generation)) return true;
-    return write_core_register(PHOSPHOR_UI_ART_CONTROL,
-                               PHOSPHOR_UI_COMMIT | 1u);
+    return true;
+}
+
+bool player_streaming()
+{
+    bool streaming = false;
+    if (xSemaphoreTake(player.mutex, portMAX_DELAY) == pdTRUE) {
+        streaming = player.status == player_status::PLAYING ||
+                    player.status == player_status::LOADING;
+        xSemaphoreGive(player.mutex);
+    }
+    return streaming;
+}
+
+// A gapless successor is queued up to one PCM FIFO ahead of its audio.  Hold
+// its prepared display until the core reports that stream as audible, or
+// until playback stops, so text and artwork change with the sound.
+void wait_until_audible(uint16_t stream_id, uint32_t generation)
+{
+    if (stream_id == 0) {
+        return;
+    }
+    while (ui_generation_current(generation) && player_streaming()) {
+        fpga_debug_result result;
+        if (!fpga_debug_request(FPGA_EXT_READ32, PHOSPHOR_AUDIBLE_STREAM, 0,
+                                &result, PHOSPHOR_UI_WRITE_TIMEOUT_MS) ||
+            result.status != 0 ||
+            static_cast<uint16_t>(result.data) == stream_id) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
 
 void ui_task(void *)
@@ -327,26 +370,40 @@ void ui_task(void *)
             snapshot = player.ui_snapshot;
             media_path = player.ui_media_path;
             generation = player.ui_generation;
+            const uint16_t stream_id = player.ui_stream_id;
             xSemaphoreGive(player.mutex);
 
+            // Prepare text and artwork in the unpublished banks, then publish
+            // both together when this track's audio is heard.
             bool block = false;
-            bool written = core_supports_block_writes(block) &&
-                           write_core_register(PHOSPHOR_UI_ART_CONTROL, 0);
+            bool artwork = false;
+            bool written = core_supports_block_writes(block);
             if (written && ui_generation_current(generation)) {
-                written = write_ui_snapshot(snapshot, generation, block);
-            }
-            PhosphorAudioMetadata metadata;
-            if (written && ui_generation_current(generation) &&
-                phosphor_read_file_metadata(media_path.c_str(), metadata)) {
-                phosphor_apply_track_metadata(snapshot, metadata);
-                written = write_ui_snapshot(snapshot, generation, block);
-                if (written && ui_generation_current(generation) &&
-                    metadata.picture.format == PhosphorPictureFormat::JPEG &&
-                    phosphor_decode_artwork(media_path.c_str(), metadata.picture,
-                                            artwork_pixels,
-                                            sizeof(artwork_pixels))) {
-                    written = write_artwork(generation, block);
+                PhosphorAudioMetadata metadata;
+                if (phosphor_read_file_metadata(media_path.c_str(), metadata)) {
+                    phosphor_apply_track_metadata(snapshot, metadata);
+                    artwork = ui_generation_current(generation) &&
+                              metadata.picture.format == PhosphorPictureFormat::JPEG &&
+                              phosphor_decode_artwork(media_path.c_str(),
+                                                      metadata.picture,
+                                                      artwork_pixels,
+                                                      sizeof(artwork_pixels));
                 }
+                written = write_ui_snapshot(snapshot, block);
+            }
+            if (written && artwork && ui_generation_current(generation)) {
+                written = write_artwork(generation, block);
+            }
+            if (written && ui_generation_current(generation)) {
+                wait_until_audible(stream_id, generation);
+            }
+            if (written && ui_generation_current(generation)) {
+                written = commit_ui_snapshot(snapshot, generation);
+            }
+            if (written && ui_generation_current(generation)) {
+                // Swap in the prepared cover, or hide the previous track's.
+                written = write_core_register(PHOSPHOR_UI_ART_CONTROL,
+                                              artwork ? PHOSPHOR_UI_COMMIT | 1u : 0);
             }
             if (!written) {
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -548,7 +605,19 @@ bool load_selection(const std::string &path, std::vector<M3uEntry> &entries,
     return false;
 }
 
-bool wait_for_player_complete(uint32_t generation, std::string &error)
+bool core_supports_gapless()
+{
+    fpga_debug_result result;
+    return fpga_debug_request(FPGA_EXT_READ32, PHOSPHOR_CORE_CAPABILITIES, 0,
+                              &result, PHOSPHOR_UI_WRITE_TIMEOUT_MS) &&
+           result.status == 0 && result.data != 0xdeadbeefu &&
+           (result.data & PHOSPHOR_CAP_GAPLESS) != 0;
+}
+
+// With accept_draining, return as soon as the core has queued the final sample
+// of the ended stream, so the next track can be appended behind its tail.
+bool wait_for_player_complete(uint32_t generation, bool accept_draining,
+                              std::string &error)
 {
     uint64_t started = bflb_mtimer_get_time_ms();
     while (!command_pending(&generation)) {
@@ -559,7 +628,8 @@ bool wait_for_player_complete(uint32_t generation, std::string &error)
             return false;
         }
         const uint8_t state = static_cast<uint8_t>(result.data & 0x0f);
-        if (state == PHOSPHOR_STATE_COMPLETE) {
+        if (state == PHOSPHOR_STATE_COMPLETE ||
+            (accept_draining && state == PHOSPHOR_STATE_DRAINING)) {
             return true;
         }
         if (state == PHOSPHOR_STATE_ERROR) {
@@ -647,15 +717,19 @@ void player_task(void *)
         }
 
         set_paused(false);
+        const bool gapless = core_supports_gapless();
+        fpga_file_stream_options options;
+        options.stream_id = fpga_file_stream_reserve_id();
+        options.reduce_flac_metadata = true;
         queue_ui_snapshot(selection_name, playlist, current, playlist_mode,
-                          make_ui_visible);
+                          make_ui_visible, gapless ? options.stream_id : 0);
 
         const M3uEntry entry = playlist[current];
         update_state(player_status::PLAYING, entry.title, {}, current + 1,
                      playlist.size());
         const fpga_file_stream_result stream =
             fpga_file_stream(entry.path.c_str(), stream_cancel_requested,
-                             &generation);
+                             &generation, options);
         if (stream.status == fpga_file_stream_status::CANCELLED) {
             continue;
         }
@@ -667,7 +741,9 @@ void player_task(void *)
         }
 
         std::string error;
-        if (!wait_for_player_complete(generation, error)) {
+        if (!wait_for_player_complete(generation,
+                                      gapless && current + 1 < playlist.size(),
+                                      error)) {
             if (command_pending(&generation)) {
                 continue;
             }

@@ -63,17 +63,32 @@ case-insensitive. Both formats use the core's signed 16-bit stereo,
 - Repeated paths remain repeated playlist entries.
 - Blank lines, comments, LF or CRLF endings, and an optional UTF-8 byte-order
   mark are accepted.
-- `#EXTINF` supplies display metadata only. Track advancement waits for the
-  FPGA player's actual completion state.
+- `#EXTINF` supplies display metadata only. Track advancement follows the
+  FPGA player's reported state, never the tagged duration.
 - A playlist may contain at most 255 tracks. A source line is limited to 512
   bytes and a resolved path to 255 bytes.
 - URLs, HLS playlists, nested playlists, missing files, and unsupported formats
   are rejected before playback begins.
 
-Every entry is an independent stream session, so sample-contiguous gapless
-playback is not guaranteed. Tang-Phosphor keeps the boundary silent and retains
-the previous native rate while the next track prefills. The current project
-scope is intentionally limited to WAV and FLAC.
+Every entry is its own stream session. When the core advertises gapless
+append (core capability bit 7), the loader starts the next entry as soon as the
+player reports that the current stream's final sample is queued (state `7`,
+draining), instead of waiting for the FIFO to empty. The core plays the new
+session's first sample on the sample period after the previous track's last, so
+same-rate tracks are sample-contiguous. The last entry still waits for
+completion. Older cores fall back to the completion handover.
+
+Native FLAC tracks are sent as `fLaC`, STREAMINFO marked as the last metadata
+block, and the unchanged audio frames. The core skips every other metadata
+block, so large PICTURE or PADDING blocks no longer delay a track's first frame
+on the FPGA UART. The display task still reads those blocks from the SD file.
+
+A gapless successor is queued up to one PCM FIFO (about 0.4 s) ahead of its
+audio. Its text and artwork are written to the inactive FPGA banks early and
+committed once the core's audible-stream register (`0xa4`) reports the new
+session, so the display changes with the sound. Left/Right pressed during that
+short window act relative to the queued track. The current project scope is
+intentionally limited to WAV and FLAC.
 
 ## Verification
 

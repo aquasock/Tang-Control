@@ -40,4 +40,10 @@ g++ -std=c++17 -Wall -Wextra -Werror \
     -o "$build_dir/firmware_image_test"
 
 "$build_dir/firmware_image_test"
+g++ -std=c++17 -Wall -Wextra -Werror \
+    -I"$repo_dir/utils" \
+    "$repo_dir/tests/flac_stream_prefix_test.cpp" \
+    -o "$build_dir/flac_stream_prefix_test"
+
+"$build_dir/flac_stream_prefix_test"
 python3 "$repo_dir/tests/tangctl_test.py"
