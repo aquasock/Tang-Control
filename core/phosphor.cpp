@@ -2,6 +2,8 @@
 
 #include <stdio.h>
 
+#include <algorithm>
+
 extern "C" {
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -129,6 +131,46 @@ bool write_core_register(uint32_t address, uint32_t value)
            result.status == 0;
 }
 
+// Each transaction waits for one acknowledged audio frame on the shared link,
+// so bulk UI data goes out as validated 64-word blocks when the core supports
+// them and falls back to single-register writes for older bitstreams.
+bool core_supports_block_writes(bool &supported)
+{
+    fpga_debug_result result;
+    if (!fpga_debug_request(FPGA_EXT_CAPABILITIES, 0, 0, &result,
+                            PHOSPHOR_UI_WRITE_TIMEOUT_MS) ||
+        result.status != 0) {
+        return false;
+    }
+    supported = (result.data & FPGA_EXT_CAP_WRITE_BLOCK) != 0;
+    return true;
+}
+
+bool write_core_words(uint32_t address, const uint32_t *words, size_t count,
+                      bool block)
+{
+    if (!block) {
+        for (size_t i = 0; i < count; ++i) {
+            if (!write_core_register(address + static_cast<uint32_t>(4 * i),
+                                     words[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    fpga_debug_result result;
+    return fpga_debug_write_block(address, words, count, &result,
+                                  PHOSPHOR_UI_WRITE_TIMEOUT_MS) &&
+           result.status == 0 && result.data == count;
+}
+
+uint32_t pack_word(const uint8_t *bytes)
+{
+    return (static_cast<uint32_t>(bytes[0]) << 24) |
+           (static_cast<uint32_t>(bytes[1]) << 16) |
+           (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
+}
+
 void set_paused(bool paused)
 {
     if (paused) {
@@ -184,20 +226,25 @@ uint32_t pack_lengths(const PhosphorUiSnapshot &snapshot, size_t first)
            snapshot.length[first + 3];
 }
 
-bool write_ui_snapshot(const PhosphorUiSnapshot &snapshot, uint32_t generation)
+bool write_ui_snapshot(const PhosphorUiSnapshot &snapshot, uint32_t generation,
+                       bool block)
 {
+    // The nine text slots are contiguous 32-byte records in register space.
+    constexpr size_t SLOT_WORDS = PHOSPHOR_UI_SLOT_BYTES / 4;
+    uint32_t text_words[PHOSPHOR_UI_SLOT_COUNT * SLOT_WORDS];
     for (size_t slot = 0; slot < PHOSPHOR_UI_SLOT_COUNT; ++slot) {
-        for (size_t offset = 0; offset < PHOSPHOR_UI_SLOT_BYTES; offset += 4) {
-            const uint32_t value =
-                (static_cast<uint32_t>(snapshot.text[slot][offset]) << 24) |
-                (static_cast<uint32_t>(snapshot.text[slot][offset + 1]) << 16) |
-                (static_cast<uint32_t>(snapshot.text[slot][offset + 2]) << 8) |
-                snapshot.text[slot][offset + 3];
-            const uint32_t address = PHOSPHOR_UI_TEXT_BASE +
-                static_cast<uint32_t>(slot * PHOSPHOR_UI_SLOT_BYTES + offset);
-            if (!write_core_register(address, value)) {
-                return false;
-            }
+        for (size_t word = 0; word < SLOT_WORDS; ++word) {
+            text_words[slot * SLOT_WORDS + word] =
+                pack_word(&snapshot.text[slot][4 * word]);
+        }
+    }
+    for (size_t first = 0; first < PHOSPHOR_UI_SLOT_COUNT * SLOT_WORDS;
+         first += FPGA_EXT_BLOCK_MAX_WORDS) {
+        const size_t count = std::min(FPGA_EXT_BLOCK_MAX_WORDS,
+                                      PHOSPHOR_UI_SLOT_COUNT * SLOT_WORDS - first);
+        if (!write_core_words(PHOSPHOR_UI_TEXT_BASE + static_cast<uint32_t>(4 * first),
+                              &text_words[first], count, block)) {
+            return false;
         }
     }
     const uint32_t playlist_state =
@@ -239,21 +286,25 @@ bool ui_generation_current(uint32_t generation)
     return current;
 }
 
-bool write_artwork(uint32_t generation)
+bool write_artwork(uint32_t generation, bool block)
 {
-    for (size_t offset = 0; offset < PHOSPHOR_ART_BYTES; offset += 4) {
-        if ((offset & 0x7f) == 0 && !ui_generation_current(generation)) {
+    // Abandon a superseded track between chunks.  The single-register path
+    // keeps its original 32-word check interval.
+    const size_t chunk_words = block ? FPGA_EXT_BLOCK_MAX_WORDS : 32;
+    uint32_t words[FPGA_EXT_BLOCK_MAX_WORDS];
+    for (size_t first = 0; first < PHOSPHOR_ART_BYTES / 4; first += chunk_words) {
+        if (!ui_generation_current(generation)) {
             return true;
         }
-        const uint32_t value =
-            (static_cast<uint32_t>(artwork_pixels[offset]) << 24) |
-            (static_cast<uint32_t>(artwork_pixels[offset + 1]) << 16) |
-            (static_cast<uint32_t>(artwork_pixels[offset + 2]) << 8) |
-            artwork_pixels[offset + 3];
-        if (!write_core_register(PHOSPHOR_UI_ART_BASE + offset, value)) {
+        const size_t count = std::min(chunk_words, PHOSPHOR_ART_BYTES / 4 - first);
+        for (size_t i = 0; i < count; ++i) {
+            words[i] = pack_word(&artwork_pixels[4 * (first + i)]);
+        }
+        if (!write_core_words(PHOSPHOR_UI_ART_BASE + static_cast<uint32_t>(4 * first),
+                              words, count, block)) {
             return false;
         }
-        if ((offset & 0x1ff) == 0x1fc) {
+        if (!block && (first + count) % 128 == 0) {
             vTaskDelay(1);
         }
     }
@@ -278,21 +329,23 @@ void ui_task(void *)
             generation = player.ui_generation;
             xSemaphoreGive(player.mutex);
 
-            bool written = write_core_register(PHOSPHOR_UI_ART_CONTROL, 0);
+            bool block = false;
+            bool written = core_supports_block_writes(block) &&
+                           write_core_register(PHOSPHOR_UI_ART_CONTROL, 0);
             if (written && ui_generation_current(generation)) {
-                written = write_ui_snapshot(snapshot, generation);
+                written = write_ui_snapshot(snapshot, generation, block);
             }
             PhosphorAudioMetadata metadata;
             if (written && ui_generation_current(generation) &&
                 phosphor_read_file_metadata(media_path.c_str(), metadata)) {
                 phosphor_apply_track_metadata(snapshot, metadata);
-                written = write_ui_snapshot(snapshot, generation);
+                written = write_ui_snapshot(snapshot, generation, block);
                 if (written && ui_generation_current(generation) &&
                     metadata.picture.format == PhosphorPictureFormat::JPEG &&
                     phosphor_decode_artwork(media_path.c_str(), metadata.picture,
                                             artwork_pixels,
                                             sizeof(artwork_pixels))) {
-                    written = write_artwork(generation);
+                    written = write_artwork(generation, block);
                 }
             }
             if (!written) {

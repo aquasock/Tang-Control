@@ -44,9 +44,33 @@ The legacy frame length is 16 bytes: one command byte and this 15-byte payload.
 
 Status values are `0` success, `1` unsupported version, `2` unsupported
 opcode, and `3` bad CRC. Capability bit 0 is 32-bit read and bit 1 is 32-bit
-write, bit 2 is streaming, and bit 3 is negotiated baud switching. A requester
+write, bit 2 is streaming, bit 3 is negotiated baud switching, and bit 4 is
+validated block writes. A requester
 must match the version, opcode, sequence, and address before
 accepting a response.
+
+## Block writes
+
+Legacy frame type `0x12` writes 1 to 64 consecutive 32-bit registers in one
+transaction. Its frame length is `12 + 4 * count` bytes: one command byte and
+this payload.
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Protocol version (`1`) |
+| 1 | 1 | Opcode `0x04` |
+| 2 | 2 | Transaction sequence |
+| 4 | 4 | Word-aligned first register address |
+| 8 | 1 | Word count, 1-64 |
+| 9 | 4 * count | Register values in address order |
+| 9 + 4 * count | 2 | CRC-16 over `0x12` and every preceding payload byte |
+
+The FPGA buffers the words and applies none of them unless the CRC, version,
+opcode, count, frame length, and alignment are all valid; it then writes them
+in address order. The reply is an ordinary `0x10` version 1 response whose
+opcode field is `0x84` and whose data field is the word count. Status `2`
+reports an invalid opcode, count, length, or alignment. A requester must hold
+the shared link through the response exactly as for a single register write.
 
 ## Stream frames
 

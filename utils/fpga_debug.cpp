@@ -1,4 +1,5 @@
 #include "fpga_debug.h"
+#include "fpga_ext_frame.h"
 
 extern "C" {
 #include "FreeRTOS.h"
@@ -25,24 +26,9 @@ fpga_debug_result response;
 fpga_debug_stats counters;
 uint16_t next_sequence = 1;
 
-uint16_t crc16_byte(uint16_t crc, uint8_t byte)
-{
-    crc ^= static_cast<uint16_t>(byte) << 8;
-    for (unsigned bit = 0; bit < 8; ++bit) {
-        crc = (crc & 0x8000u) ? static_cast<uint16_t>((crc << 1) ^ 0x1021u)
-                              : static_cast<uint16_t>(crc << 1);
-    }
-    return crc;
-}
-
 uint16_t packet_crc(uint8_t command, const uint8_t *payload, size_t length)
 {
-    uint16_t crc = 0xffffu;
-    crc = crc16_byte(crc, command);
-    for (size_t i = 0; i < length; ++i) {
-        crc = crc16_byte(crc, payload[i]);
-    }
-    return crc;
+    return fpga_ext_packet_crc(command, payload, length);
 }
 
 uint16_t read_be16(const uint8_t *data)
@@ -57,26 +43,20 @@ uint32_t read_be32(const uint8_t *data)
            (static_cast<uint32_t>(data[2]) << 8) | data[3];
 }
 
-void write_be16(uint8_t *data, uint16_t value)
-{
-    data[0] = static_cast<uint8_t>(value >> 8);
-    data[1] = static_cast<uint8_t>(value);
-}
-
 void write_be32(uint8_t *data, uint32_t value)
 {
-    data[0] = static_cast<uint8_t>(value >> 24);
-    data[1] = static_cast<uint8_t>(value >> 16);
-    data[2] = static_cast<uint8_t>(value >> 8);
-    data[3] = static_cast<uint8_t>(value);
+    fpga_ext_write_be32(data, value);
 }
 
 } // namespace
 
 namespace {
 
-bool request_locked(uint8_t opcode, uint32_t address, uint32_t data,
-                    fpga_debug_result *result, uint32_t timeout_ms)
+// Send one request whose payload starts with version, opcode, a sequence
+// placeholder, and the address, then wait for the matching 0x10 response.
+// The payload buffer must have two spare bytes for the CRC.
+bool transaction_locked(uint8_t command, uint8_t *payload, size_t length,
+                        fpga_debug_result *result, uint32_t timeout_ms)
 {
     if (request_mutex == nullptr || response_ready == nullptr || result == nullptr) {
         return false;
@@ -88,28 +68,21 @@ bool request_locked(uint8_t opcode, uint32_t address, uint32_t data,
     while (xSemaphoreTake(response_ready, 0) == pdTRUE) {
     }
 
-    uint8_t payload[REQUEST_PAYLOAD_LENGTH];
     const uint16_t sequence = next_sequence++;
     if (next_sequence == 0) {
         next_sequence = 1;
     }
-    payload[0] = FPGA_EXT_VERSION;
-    payload[1] = opcode;
-    write_be16(&payload[2], sequence);
-    write_be32(&payload[4], address);
-    write_be32(&payload[8], data);
-    const uint16_t crc = packet_crc(FPGA_EXT_COMMAND, payload, 12);
-    write_be16(&payload[12], crc);
+    const size_t sealed_length = fpga_ext_seal_request(command, payload, length, sequence);
 
     taskENTER_CRITICAL();
-    pending_opcode = opcode;
+    pending_opcode = payload[1];
     pending_sequence = sequence;
-    pending_address = address;
+    pending_address = read_be32(&payload[4]);
     pending = true;
     ++counters.requests;
-    fpga_tx_header(FPGA_EXT_COMMAND, REQUEST_PAYLOAD_LENGTH + 1);
-    for (uint8_t byte : payload) {
-        fpga_tx_byte(byte);
+    fpga_tx_header(command, static_cast<int>(sealed_length) + 1);
+    for (size_t i = 0; i < sealed_length; ++i) {
+        fpga_tx_byte(payload[i]);
     }
     taskEXIT_CRITICAL();
 
@@ -127,6 +100,18 @@ bool request_locked(uint8_t opcode, uint32_t address, uint32_t data,
     }
     xSemaphoreGive(request_mutex);
     return received == pdTRUE;
+}
+
+bool request_locked(uint8_t opcode, uint32_t address, uint32_t data,
+                    fpga_debug_result *result, uint32_t timeout_ms)
+{
+    uint8_t payload[REQUEST_PAYLOAD_LENGTH];
+    payload[0] = FPGA_EXT_VERSION;
+    payload[1] = opcode;
+    write_be32(&payload[4], address);
+    write_be32(&payload[8], data);
+    return transaction_locked(FPGA_EXT_COMMAND, payload, REQUEST_PAYLOAD_LENGTH - 2,
+                              result, timeout_ms);
 }
 
 } // namespace
@@ -163,6 +148,27 @@ bool fpga_debug_request(uint8_t opcode, uint32_t address, uint32_t data,
     fpga_link_release();
     // Let an equal-priority stream sender that was waiting on the shared link
     // run before this task can submit another register transaction.
+    taskYIELD();
+    return received;
+}
+
+bool fpga_debug_write_block(uint32_t address, const uint32_t *words, size_t count,
+                            fpga_debug_result *result, uint32_t timeout_ms)
+{
+    if (words == nullptr || count == 0 || count > FPGA_EXT_BLOCK_MAX_WORDS ||
+        (address & 3u) != 0) {
+        return false;
+    }
+    uint8_t payload[FPGA_EXT_BLOCK_HEADER_LENGTH + 4 * FPGA_EXT_BLOCK_MAX_WORDS + 2];
+    const size_t length = fpga_ext_block_payload(payload, FPGA_EXT_VERSION,
+                                                 FPGA_EXT_WRITE_BLOCK, address,
+                                                 words, count);
+    if (!fpga_link_acquire(timeout_ms)) {
+        return false;
+    }
+    const bool received = transaction_locked(FPGA_BLOCK_COMMAND, payload, length,
+                                             result, timeout_ms);
+    fpga_link_release();
     taskYIELD();
     return received;
 }

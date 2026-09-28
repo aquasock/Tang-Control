@@ -12,7 +12,13 @@ enum : uint8_t {
     FPGA_EXT_READ32 = 0x01,
     FPGA_EXT_WRITE32 = 0x02,
     FPGA_EXT_SET_BAUD = 0x03,
+    FPGA_EXT_WRITE_BLOCK = 0x04,
+    // Validated multi-word writes use their own frame type and are answered
+    // with a normal 0x10 response.
+    FPGA_BLOCK_COMMAND = 0x12,
 };
+
+constexpr size_t FPGA_EXT_BLOCK_MAX_WORDS = 64;
 
 enum : uint32_t {
     FPGA_EXT_CAP_READ32 = 1u << 0,
@@ -20,6 +26,7 @@ enum : uint32_t {
     // Reserved for the compatible streaming and baud-switch extensions.
     FPGA_EXT_CAP_STREAM = 1u << 2,
     FPGA_EXT_CAP_BAUD_SWITCH = 1u << 3,
+    FPGA_EXT_CAP_WRITE_BLOCK = 1u << 4,
 };
 
 struct fpga_debug_result {
@@ -48,6 +55,10 @@ bool fpga_link_acquire(uint32_t timeout_ms);
 void fpga_link_release(void);
 bool fpga_debug_request(uint8_t opcode, uint32_t address, uint32_t data,
                         fpga_debug_result *result, uint32_t timeout_ms = 250);
+// Write 1-64 consecutive 32-bit registers starting at a word-aligned address.
+// The FPGA applies none of them unless the complete frame validates.
+bool fpga_debug_write_block(uint32_t address, const uint32_t *words, size_t count,
+                            fpga_debug_result *result, uint32_t timeout_ms = 250);
 void fpga_debug_handle_response(const uint8_t *payload, size_t length);
 void fpga_debug_get_stats(fpga_debug_stats *stats);
 bool fpga_debug_set_baud(uint32_t baudrate);
