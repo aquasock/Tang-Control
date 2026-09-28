@@ -12,4 +12,20 @@ g++ -std=c++17 -Wall -Wextra -Werror \
     -o "$build_dir/m3u_playlist_test"
 
 "$build_dir/m3u_playlist_test" "$repo_dir/tests/fixtures/vlc-repeat.m3u8"
+
+g++ -std=c++17 -Wall -Wextra -Werror \
+    -I"$repo_dir/core" \
+    "$repo_dir/core/phosphor_ui_model.cpp" \
+    "$repo_dir/tests/phosphor_ui_model_test.cpp" \
+    -o "$build_dir/phosphor_ui_model_test"
+
+"$build_dir/phosphor_ui_model_test"
+
+g++ -std=c++17 -Wall -Wextra -Werror \
+    -I"$repo_dir/core" \
+    "$repo_dir/core/phosphor_metadata.cpp" \
+    "$repo_dir/tests/phosphor_metadata_test.cpp" \
+    -o "$build_dir/phosphor_metadata_test"
+
+"$build_dir/phosphor_metadata_test"
 python3 "$repo_dir/tests/tangctl_test.py"

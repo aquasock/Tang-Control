@@ -15,6 +15,7 @@ constexpr size_t REQUEST_PAYLOAD_LENGTH = 14;
 constexpr size_t RESPONSE_PAYLOAD_LENGTH = 15;
 
 SemaphoreHandle_t request_mutex;
+SemaphoreHandle_t link_mutex;
 SemaphoreHandle_t response_ready;
 volatile bool pending;
 volatile uint8_t pending_opcode;
@@ -72,16 +73,10 @@ void write_be32(uint8_t *data, uint32_t value)
 
 } // namespace
 
-void fpga_debug_init(void)
-{
-    request_mutex = xSemaphoreCreateMutex();
-    response_ready = xSemaphoreCreateBinary();
-    pending = false;
-    counters = {};
-}
+namespace {
 
-bool fpga_debug_request(uint8_t opcode, uint32_t address, uint32_t data,
-                        fpga_debug_result *result, uint32_t timeout_ms)
+bool request_locked(uint8_t opcode, uint32_t address, uint32_t data,
+                    fpga_debug_result *result, uint32_t timeout_ms)
 {
     if (request_mutex == nullptr || response_ready == nullptr || result == nullptr) {
         return false;
@@ -134,6 +129,44 @@ bool fpga_debug_request(uint8_t opcode, uint32_t address, uint32_t data,
     return received == pdTRUE;
 }
 
+} // namespace
+
+void fpga_debug_init(void)
+{
+    request_mutex = xSemaphoreCreateMutex();
+    link_mutex = xSemaphoreCreateMutex();
+    response_ready = xSemaphoreCreateBinary();
+    pending = false;
+    counters = {};
+}
+
+bool fpga_link_acquire(uint32_t timeout_ms)
+{
+    return link_mutex != nullptr &&
+           xSemaphoreTake(link_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void fpga_link_release(void)
+{
+    if (link_mutex != nullptr) {
+        xSemaphoreGive(link_mutex);
+    }
+}
+
+bool fpga_debug_request(uint8_t opcode, uint32_t address, uint32_t data,
+                        fpga_debug_result *result, uint32_t timeout_ms)
+{
+    if (!fpga_link_acquire(timeout_ms)) {
+        return false;
+    }
+    const bool received = request_locked(opcode, address, data, result, timeout_ms);
+    fpga_link_release();
+    // Let an equal-priority stream sender that was waiting on the shared link
+    // run before this task can submit another register transaction.
+    taskYIELD();
+    return received;
+}
+
 void fpga_debug_handle_response(const uint8_t *payload, size_t length)
 {
     if (length != RESPONSE_PAYLOAD_LENGTH || payload[0] != FPGA_EXT_VERSION) {
@@ -184,12 +217,19 @@ bool fpga_debug_set_baud(uint32_t baudrate)
     if (fpga_uart_get_baud() == baudrate) {
         return true;
     }
+    if (!fpga_link_acquire(1000)) {
+        return false;
+    }
     fpga_debug_result result;
-    if (!fpga_debug_request(FPGA_EXT_SET_BAUD, 0, baudrate, &result) ||
+    if (!request_locked(FPGA_EXT_SET_BAUD, 0, baudrate, &result, 1000) ||
         result.status != 0 || result.data != baudrate) {
+        fpga_link_release();
         return false;
     }
     // The FPGA changes rate only after its final response stop bit.
     vTaskDelay(pdMS_TO_TICKS(2));
-    return fpga_uart_set_baud(baudrate);
+    const bool changed = fpga_uart_set_baud(baudrate);
+    fpga_link_release();
+    taskYIELD();
+    return changed;
 }

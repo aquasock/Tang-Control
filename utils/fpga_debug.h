@@ -40,6 +40,12 @@ struct fpga_debug_stats {
 };
 
 void fpga_debug_init(void);
+// Serialize complete request/response transactions across every protocol that
+// shares the FPGA UART.  A packet sender must hold this lock until its matching
+// response arrives; protecting only the transmit bytes permits another packet
+// to overtake the outstanding response.
+bool fpga_link_acquire(uint32_t timeout_ms);
+void fpga_link_release(void);
 bool fpga_debug_request(uint8_t opcode, uint32_t address, uint32_t data,
                         fpga_debug_result *result, uint32_t timeout_ms = 250);
 void fpga_debug_handle_response(const uint8_t *payload, size_t length);

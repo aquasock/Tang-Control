@@ -17,8 +17,30 @@ Place audio and playlists under `music/`. TangCore then shows **Phosphor** in
 its main menu. Selecting it opens the filtered audio chooser, loads the FPGA
 core when necessary, and begins the selected WAV, FLAC, or playlist.
 
-The Phosphor in-core menu provides **Load Audio / Playlist**, **Previous
-Track**, **Next Track**, and **Stop Playback** controls.
+The TangCore OSD intentionally provides only **Load Audio / Playlist** and
+**Main Menu**. Opening or navigating the OSD does not stop playback. Playback
+controls live in Phosphor's native 720p screen: **Start** pauses/resumes,
+**Left/Right** select the previous/next playlist track, and **X** shows or hides
+the screen. These controls are suppressed while the OSD is open.
+
+Tang-Control owns playlist navigation and sends a complete bounded metadata
+snapshot for each track. The FPGA publishes that snapshot atomically and owns
+rendering, pause timing, progress, and exact elapsed/total clocks. Reaching the
+last playlist track completes playback without looping.
+
+The native information panel contains exactly three values: album, artist, and
+track. Per-track FLAC `ALBUM`, `ALBUMARTIST` (preferred over `ARTIST`), `ARTIST`,
+and `TITLE` comments override playlist-name and VLC `#EXTINF` fallbacks. WAV
+files use standard RIFF `LIST/INFO` fields `IPRD`, `IART`, and `INAM` when
+present. FLAC front-cover PICTURE blocks also override the no-art placeholder.
+Baseline JPEG covers are center-fitted to 92x92 RGB332 on the BL616 and uploaded
+to an inactive FPGA bank before one atomic artwork commit. Metadata and artwork
+work runs independently of the audio stream.
+
+Display metadata is decoded as UTF-8 and reduced to the FPGA's bounded ASCII
+font. Common typographic quotes, apostrophes, dashes, nonbreaking spaces, and
+ellipses are normalized to readable ASCII; any other unsupported code point
+becomes one `?` display character.
 
 ## VLC M3U compatibility profile
 
@@ -55,9 +77,10 @@ scope is intentionally limited to WAV and FLAC.
 
 ## Verification
 
-The host-side parser regression uses the same syntax emitted by VLC and checks
-duplicate entries, byte-at-a-time input, relative path resolution, BOM/CRLF
-handling, bounds, and unsupported inputs:
+The host-side regressions use the same syntax emitted by VLC and check duplicate
+entries, byte-at-a-time input, relative path resolution, BOM/CRLF handling,
+bounds, unsupported inputs, FLAC comments and cover discovery, WAV INFO tags,
+and per-track metadata precedence:
 
 ```sh
 tests/run.sh

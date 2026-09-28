@@ -5,6 +5,7 @@ extern "C" {
 #include "semphr.h"
 #include "task.h"
 }
+#include "fpga_debug.h"
 #include "utils.h"
 
 namespace {
@@ -66,6 +67,10 @@ bool fpga_stream_send(uint8_t flags, uint16_t stream_id, uint32_t offset,
     if (xSemaphoreTake(stream_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         return false;
     }
+    if (!fpga_link_acquire(timeout_ms)) {
+        xSemaphoreGive(stream_mutex);
+        return false;
+    }
     while (xSemaphoreTake(response_ready, 0) == pdTRUE) {
     }
 
@@ -102,7 +107,14 @@ bool fpga_stream_send(uint8_t flags, uint16_t stream_id, uint32_t offset,
     } else {
         pending = false;
     }
+    // Keep the shared link locked through the matching response.  The FPGA
+    // transport has one response channel and cannot accept an unrelated debug
+    // request while this stream frame is outstanding.
+    fpga_link_release();
     xSemaphoreGive(stream_mutex);
+    // A stream can otherwise reacquire the link immediately and starve the
+    // equal-priority metadata and playback-control tasks indefinitely.
+    taskYIELD();
     return received == pdTRUE;
 }
 

@@ -118,6 +118,12 @@ The optional FPGA development channel is documented in
 [`docs/extended-control-protocol.md`](docs/extended-control-protocol.md).
 `peek` and `poke` only work with a core that implements that protocol; their
 address map belongs to the core rather than Tang-Control.
+
+Phosphor cover-art support uses ChaN's TJpgDec R0.03 from the required
+Bouffalo SDK. TJpgDec permits personal, non-profit, and commercial use and
+redistribution when its copyright notice is retained; the SDK source retains
+that notice. JPEG decoding runs on the BL616 and sends only a 92x92 RGB332
+image to the FPGA.
 `stream` reads from the console's SD card and uses acknowledged 1024-byte
 frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
 2 Mbps rate afterward.
@@ -127,7 +133,10 @@ frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
 Core ID `0x50` has an integrated SD-card loader for standalone WAV/FLAC files and
 VLC-style M3U/M3U8 playlists. It supports relative files as independent stream
 sessions, automatic track advancement, duplicate entries, and in-core
-Previous/Next/Stop controls without packaging the files in a TAR archive.
+controller navigation without packaging the files in a TAR archive. TangCore's
+OSD only opens the audio chooser or returns to the main menu. In the native
+Phosphor screen, Start pauses/resumes, Left/Right select the previous/next
+playlist track, and X shows or hides the screen.
 Setup, compatibility limits, and the deterministic parser test are documented
 in [`docs/phosphor-loader.md`](docs/phosphor-loader.md).
 

@@ -47,9 +47,15 @@ endif()
 
 find_package(bouffalo_sdk REQUIRED HINTS $ENV{BL_SDK_BASE})
 
+set(TJPGD_DIR
+    "$ENV{BL_SDK_BASE}/components/graphics/lvgl/extra/libs/sjpg")
+if(NOT EXISTS "${TJPGD_DIR}/tjpgd.c")
+    message(FATAL_ERROR "Bouffalo SDK TJpgDec source was not found")
+endif()
+
 # Add include directories
 sdk_add_include_directories(
-    . usb fpga ui core utils
+    . usb fpga ui core utils "${TJPGD_DIR}"
 )
 
 # Add source files
@@ -65,7 +71,12 @@ if(NOT TANG_USB_CDC_CONSOLE)
     list(FILTER MY_SOURCES EXCLUDE REGEX ".*/usb_cdc_console\\.cpp$")
 endif()
 
-target_sources(app PRIVATE ${MY_SOURCES})
+target_sources(app PRIVATE ${MY_SOURCES} "${TJPGD_DIR}/tjpgd.c")
+target_compile_definitions(app PRIVATE
+    LV_KCONFIG_IGNORE=1
+    LV_CONF_SKIP=1
+    LV_USE_SJPG=1
+)
 sdk_set_main_file(main.cpp)
 
-project(tangcore CXX)
+project(tangcore C CXX)
