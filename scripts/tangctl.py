@@ -337,6 +337,10 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("ping")
     subparsers.add_parser("status")
+    rx_stats = subparsers.add_parser("rxstats")
+    rx_stats.add_argument(
+        "--reset", action="store_true", help="zero the counters after printing"
+    )
     subparsers.add_parser("caps")
     peek = subparsers.add_parser("peek")
     peek.add_argument("address", type=lambda value: int(value, 0))
@@ -386,6 +390,8 @@ def main():
             if not 0 <= args.address <= 0xFFFFFFFF or not 0 <= args.value <= 0xFFFFFFFF:
                 raise RuntimeError("address and value must be 32-bit")
             run_command(port, f"poke 0x{args.address:08x} 0x{args.value:08x}")
+        elif args.command == "rxstats":
+            run_command(port, "rxstats reset" if args.reset else "rxstats")
         elif args.command == "baud":
             run_command(port, f"baud {args.rate}")
         elif args.command == "stream":

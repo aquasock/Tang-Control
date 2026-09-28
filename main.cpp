@@ -19,6 +19,8 @@ extern "C" {
 #include "bflb_uart.h"
 #include "bflb_clock.h"
 #include "bl616_clock.h"
+#include "bflb_mtimer.h"
+#include "hardware/uart_reg.h"
 
 #include "usbh_core.h"
 #include "ff.h"
@@ -284,7 +286,26 @@ int joy_choice(int start_line, int len, int *active, int overlay_key_code) {
 #define MAIN_TASK_STACK_SIZE  2048
 #define MAIN_TASK_PRIORITY    3
 #define UART1_RX_TASK_STACK_SIZE  512
-#define UART1_RX_TASK_PRIORITY    3
+// The RX FIFO holds only 32 bytes, and the SD driver busy-waits without
+// yielding. Run above every task that touches the SD card (USB CDC is 4) so
+// file transfers cannot starve FPGA replies and joypad frames.
+#define UART1_RX_TASK_PRIORITY    5
+
+// Written only by uart1_rx_task; aligned 32-bit stores are atomic on the
+// BL616, so readers take a snapshot without stalling the receive loop.
+static fpga_rx_stats rx_stats;
+
+void fpga_rx_get_stats(fpga_rx_stats *stats) {
+    taskENTER_CRITICAL();
+    *stats = rx_stats;
+    taskEXIT_CRITICAL();
+}
+
+void fpga_rx_reset_stats(void) {
+    taskENTER_CRITICAL();
+    rx_stats = {};
+    taskEXIT_CRITICAL();
+}
 
 // Receive joypad updates and other UART responses from the FPGA
 static void uart1_rx_task(void *pvParameters)
@@ -293,17 +314,40 @@ static void uart1_rx_task(void *pvParameters)
     uint16_t pos = 0;
     uint8_t type = 0;
     uint16_t len = 0;
-    
+    uint64_t last_poll_us = bflb_mtimer_get_time_us();
+
     while (1) {
+        const uint64_t now_us = bflb_mtimer_get_time_us();
+        const uint32_t gap_us = static_cast<uint32_t>(now_us - last_poll_us);
+        last_poll_us = now_us;
+        const uint32_t waiting =
+            bflb_uart_feature_control(uart1_dev, UART_CMD_GET_RX_FIFO_CNT, 0);
+        if (gap_us > rx_stats.max_gap_us)
+            rx_stats.max_gap_us = gap_us;
+        if (waiting > rx_stats.fifo_high_water)
+            rx_stats.fifo_high_water = waiting;
+
+        // The overflow flag is sticky until the FIFO is cleared. Bytes were
+        // lost, so the frame in progress is damaged: drop it and resync.
+        if (getreg32(uart1_dev->reg_base + UART_FIFO_CONFIG_0_OFFSET) &
+            UART_RX_FIFO_OVERFLOW) {
+            bflb_uart_feature_control(uart1_dev, UART_CMD_CLR_RX_FIFO, 0);
+            ++rx_stats.fifo_overflows;
+            pos = 0;
+        }
+
         // Drain every byte already in the FIFO before yielding. Reading only
         // one byte per scheduler tick adds roughly one millisecond per reply
         // byte, which throttles acknowledged streams to about 50 KiB/s.
         while (bflb_uart_rxavailable(uart1_dev)) {
             uint8_t ch = bflb_uart_getchar(uart1_dev);
-            
+            ++rx_stats.bytes;
+
             if (pos == 0) {          // expecting 0xAA
-                if (ch == 0xAA) 
+                if (ch == 0xAA)
                     pos++;
+                else
+                    ++rx_stats.resync_bytes;
             } else if (pos == 1) {   // len msb
                 len = (uint16_t)ch << 8;
                 pos++;
@@ -341,6 +385,7 @@ static void uart1_rx_task(void *pvParameters)
                         joy2_state = joy2;
                         xSemaphoreGive(state_mutex);
                     }
+                    ++rx_stats.joypad_frames;
                     pos = 0; // Reset for next packet
                 } else
                     pos++;
@@ -408,6 +453,7 @@ static void uart1_rx_task(void *pvParameters)
                     pos++;
                 }
             } else {
+                ++rx_stats.unknown_types;
                 pos = 0; // Reset if we get out of sync
             }
         }

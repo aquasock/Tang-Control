@@ -27,6 +27,7 @@ extern "C" {
 #include "fpga_stream.h"
 #include "fpga_file_stream.h"
 #include "init.h"
+#include "utils.h"
 
 extern const char *BOARD_NAME;
 extern int16_t active_core;
@@ -266,6 +267,25 @@ void print_banner()
               "Type 'help' for commands.\r\n> ");
 }
 
+void print_rx_stats()
+{
+    fpga_rx_stats stats;
+    fpga_rx_get_stats(&stats);
+    cdc_printf("fpga_rx_bytes: %u\r\n", static_cast<unsigned>(stats.bytes));
+    cdc_printf("fpga_rx_joypad_frames: %u\r\n",
+               static_cast<unsigned>(stats.joypad_frames));
+    cdc_printf("fpga_rx_fifo_overflows: %u\r\n",
+               static_cast<unsigned>(stats.fifo_overflows));
+    cdc_printf("fpga_rx_fifo_high_water: %u\r\n",
+               static_cast<unsigned>(stats.fifo_high_water));
+    cdc_printf("fpga_rx_resync_bytes: %u\r\n",
+               static_cast<unsigned>(stats.resync_bytes));
+    cdc_printf("fpga_rx_unknown_types: %u\r\n",
+               static_cast<unsigned>(stats.unknown_types));
+    cdc_printf("fpga_rx_max_gap_us: %u\r\n",
+               static_cast<unsigned>(stats.max_gap_us));
+}
+
 void print_status()
 {
     cdc_printf("board: %s\r\n", BOARD_NAME);
@@ -286,6 +306,7 @@ void print_status()
     cdc_printf("fpga_crc_errors: %u\r\n", static_cast<unsigned>(stats.crc_errors));
     cdc_printf("fpga_malformed: %u\r\n", static_cast<unsigned>(stats.malformed));
     cdc_printf("fpga_unexpected: %u\r\n", static_cast<unsigned>(stats.unexpected));
+    print_rx_stats();
     cdc_print("OK\r\n");
 }
 
@@ -850,6 +871,7 @@ void execute_command(char *line)
         cdc_print("help              show commands\r\n"
                   "ping              verify command channel\r\n"
                   "status            show TangCore state\r\n"
+                  "rxstats [reset]   show (then zero) FPGA UART RX health\r\n"
                   "caps              query FPGA transport capabilities\r\n"
                   "peek <addr> [n]   read one or more FPGA debug words\r\n"
                   "poke <addr> <val> write an FPGA debug word\r\n"
@@ -867,6 +889,13 @@ void execute_command(char *line)
         cdc_print("PONG\r\nOK\r\n");
     } else if (strcmp(line, "status") == 0) {
         print_status();
+    } else if (strcmp(line, "rxstats") == 0) {
+        print_rx_stats();
+        cdc_print("OK\r\n");
+    } else if (strcmp(line, "rxstats reset") == 0) {
+        print_rx_stats();
+        fpga_rx_reset_stats();
+        cdc_print("OK\r\n");
     } else if (strcmp(line, "caps") == 0) {
         run_capabilities();
     } else if (strncmp(line, "peek ", 5) == 0) {

@@ -135,6 +135,19 @@ extern volatile int16_t core_id;
 extern volatile uint8_t key_buf[4];     // ascii keys when overlay is on, non-zero if key is pressed
                                         // read should take all bytes and clear buffer
 
+// Receive-side health of the FPGA UART, maintained by uart1_rx_task.
+struct fpga_rx_stats {
+    uint32_t bytes;             // bytes drained from the RX FIFO
+    uint32_t joypad_frames;     // complete type 3 (joypad) frames
+    uint32_t fifo_overflows;    // hardware RX FIFO overflow events
+    uint32_t fifo_high_water;   // most bytes found waiting when the task woke
+    uint32_t resync_bytes;      // bytes skipped while searching for 0xAA
+    uint32_t unknown_types;     // frames dropped for an unrecognized type
+    uint32_t max_gap_us;        // longest interval between RX FIFO polls
+};
+extern void fpga_rx_get_stats(fpga_rx_stats *stats);
+extern void fpga_rx_reset_stats(void);
+
 extern void get_joypad_states(uint16_t *joy1, uint16_t *joy2, uint16_t *hid1, uint16_t *hid2);
 extern int16_t get_core_id(void);
 extern uint32_t get_core_config(void);
