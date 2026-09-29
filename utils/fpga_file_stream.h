@@ -41,6 +41,10 @@ struct fpga_file_stream_options {
     // omitting metadata blocks the core would skip anyway.  The summary byte
     // count and CRC then describe the transmitted stream, not the file.
     bool reduce_flac_metadata = false;
+    // Stream only `length` bytes starting at file byte `offset` (length 0 =
+    // to the end of the file). Stream offsets still count from zero.
+    uint32_t offset = 0;
+    uint32_t length = 0;
 };
 
 void fpga_file_stream_init(void);

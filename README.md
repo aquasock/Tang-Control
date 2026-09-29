@@ -162,6 +162,20 @@ image to the FPGA.
 frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
 2 Mbps rate afterward.
 
+## Tang-PSX disc service
+
+`core/tangpsx.cpp` serves PlayStation disc images to the Tang-PSX Gate 1 core
+(core ID low byte `0x51`, debug ABI `0x00020002` or later). While that core is
+active, the service finds the first `.cue` file in the SD-card root, publishes
+the size of the `.bin` its `FILE` line names (in 2352-byte sectors) to debug
+address `0x20c`, and polls a mailbox the core's firmware writes: byte offset
+`0x204`, byte length `0x208`, then sequence `0x200`. Each new sequence is
+answered with one FPGA stream session carrying that byte range of the image
+(`fpga_file_stream` with the `offset`/`length` options). The mailbox is read
+twice around its fields so an unsynchronized update is never served. The USB
+console's `status` command reports the disc, its size, and the request, failure,
+and byte counts.
+
 ## Tang-Phosphor audio loader
 
 Core ID `0x50` has an integrated SD-card loader for standalone WAV/FLAC files and

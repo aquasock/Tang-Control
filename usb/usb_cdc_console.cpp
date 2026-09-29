@@ -6,6 +6,7 @@
  */
 
 #include "usb_cdc_console.h"
+#include "cores.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -296,6 +297,7 @@ void print_status()
     cdc_printf("core_running: %s\r\n", core_running ? "yes" : "no");
     cdc_printf("fpga_uart_baud: %u\r\n",
                static_cast<unsigned>(fpga_uart_get_baud()));
+    tangpsx_disc_status(cdc_printf);
     cdc_printf("usb_rx_bytes: %llu\r\n",
                static_cast<unsigned long long>(rx_total));
     cdc_printf("usb_rx_dropped: %u\r\n", static_cast<unsigned>(rx_dropped));

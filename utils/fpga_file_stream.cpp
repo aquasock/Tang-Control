@@ -119,6 +119,13 @@ fpga_file_stream_result fpga_file_stream(const char *path,
         summary.status = fpga_file_stream_status::FILE_TOO_LARGE;
         goto finish;
     }
+    if (options.offset != 0) {
+        summary.filesystem_status = f_lseek(&file, options.offset);
+        if (summary.filesystem_status != FR_OK) {
+            summary.status = fpga_file_stream_status::READ_FAILED;
+            goto finish;
+        }
+    }
 
     if ((capabilities.data & FPGA_EXT_CAP_BAUD_SWITCH) != 0) {
         if (!fpga_debug_set_baud(5000000)) {
@@ -163,8 +170,18 @@ fpga_file_stream_result fpga_file_stream(const char *path,
     while (summary.status == fpga_file_stream_status::INVALID_ARGUMENT &&
            !cancellation_requested(cancel, cancel_context)) {
         UINT count = 0;
+        UINT wanted = sizeof(stream_buffer);
+        if (options.length != 0) {
+            if (offset >= options.length) {
+                summary.status = fpga_file_stream_status::OK;
+                break;
+            }
+            if (options.length - offset < wanted) {
+                wanted = options.length - offset;
+            }
+        }
         summary.filesystem_status =
-            f_read(&file, stream_buffer, sizeof(stream_buffer), &count);
+            f_read(&file, stream_buffer, wanted, &count);
         if (summary.filesystem_status != FR_OK) {
             summary.status = fpga_file_stream_status::READ_FAILED;
             break;

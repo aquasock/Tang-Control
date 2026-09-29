@@ -657,6 +657,7 @@ int main(void)
     fpga_stream_init();
     fpga_file_stream_init();
     phosphor_player_init();
+    tangpsx_disc_init();
 
     overlay_status("Initializing SDH...");
     fatfs_sdh_driver_register();        // calls SDH_Init()

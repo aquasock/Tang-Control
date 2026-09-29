@@ -43,6 +43,8 @@ Menu *create_default_menu(const char *imgdir);
 Menu *create_pcxt_menu(const char *imgdir);
 Menu *create_phosphor_menu(const char *imgdir);
 void phosphor_player_init(void);
+void tangpsx_disc_init(void);
+void tangpsx_disc_status(void (*print)(const char *format, ...));
 
 extern bool floppy[2];
 extern std::string floppy_fname[2];
