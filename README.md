@@ -6,6 +6,15 @@ board — plus the PC-side client that talks to it over USB CDC.
 
 The interesting work lives on the **`feature/usb-cdc-file-transfer`** branch.
 
+### User Mode - Run tangcore normally
+<img width="1275" height="960" alt="1-wire user mode" src="https://github.com/user-attachments/assets/9430af0a-f0ee-407e-be17-92e35e12abb8" />
+
+### Diag Mode - (1-wire) JTAG-FPGA, UART-FPGA, core load/execute
+<img width="1275" height="960" alt="1-wire diag mode" src="https://github.com/user-attachments/assets/44d14c18-4c8b-41f2-8600-9c9e9ee8ad2b" />
+
+### Debug Mode — (2-wire) CDC file management, JTAG-FPGA via Pico 2, Flash BL616 (No-BOOT)
+<img width="1275" height="960" alt="2-wire debug mode" src="https://github.com/user-attachments/assets/97f04ab4-8d42-43e0-a8ed-3a0647104712" />
+
 ---
 
 ## What our fork adds over stock
