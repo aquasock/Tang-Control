@@ -927,6 +927,21 @@ void run_upload(uint32_t expected, uint32_t expected_crc, const char *path)
                static_cast<unsigned>(actual_crc));
 }
 
+// The extended debug protocol (0x10) behind caps/peek/poke/baud is implemented
+// only by the Tang-Phosphor core (id 0x50). The stock menu/monitor core and
+// the game cores speak the older protocol, so these commands would otherwise
+// hang until the FPGA debug request times out.
+static bool require_ext_core()
+{
+    if (active_core == 0x50) {
+        return true;
+    }
+    cdc_print("ERR no Tang-Phosphor core active; caps/peek/poke/baud use the "
+              "extended debug protocol, which only the Phosphor core (id 0x50) "
+              "implements\r\n");
+    return false;
+}
+
 void execute_command(char *line)
 {
     while (*line == ' ' || *line == '\t') {
@@ -971,13 +986,13 @@ void execute_command(char *line)
         fpga_rx_reset_stats();
         cdc_print("OK\r\n");
     } else if (strcmp(line, "caps") == 0) {
-        run_capabilities();
+        if (require_ext_core()) run_capabilities();
     } else if (strncmp(line, "peek ", 5) == 0) {
-        run_peek(line + 5);
+        if (require_ext_core()) run_peek(line + 5);
     } else if (strncmp(line, "poke ", 5) == 0) {
-        run_poke(line + 5);
+        if (require_ext_core()) run_poke(line + 5);
     } else if (strncmp(line, "baud ", 5) == 0) {
-        run_baud(line + 5);
+        if (require_ext_core()) run_baud(line + 5);
     } else if (strncmp(line, "stream ", 7) == 0) {
         run_stream(line + 7);
     } else if (strncmp(line, "bench ", 6) == 0) {

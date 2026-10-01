@@ -32,13 +32,31 @@ FW_RECONNECT_TIMEOUT = 120
 
 
 def find_port(vid=USB_VID, pid=USB_PID):
+    ports = list(list_ports.comports())
     matches = [
         port.device
-        for port in list_ports.comports()
+        for port in ports
         if port.vid == vid and port.pid == pid
     ]
     if not matches:
-        raise RuntimeError("TangCore USB CDC device not found")
+        hint = ""
+        ft2232 = [p.device for p in ports if p.vid == 0x0403 and p.pid == 0x6010]
+        if ft2232:
+            hint = (
+                f"\nFound the FT2232 debug cable ({', '.join(ft2232)}) instead.\n"
+                "That is one-wire mode (JTAG+UART straight to the FPGA).\n"
+                "tangctl talks to the BL616 over the USB CDC, which needs the\n"
+                "two-wire setup: connect the power cable AND the CDC cable\n"
+                "(the board's bottom-left USB-C port)."
+            )
+        else:
+            usb = [p for p in ports if p.vid is not None and p.pid is not None]
+            if usb:
+                found = ", ".join(f"{p.device} ({p.vid:04x}:{p.pid:04x})" for p in usb)
+                hint = f"\nConnected USB serial devices: {found}"
+            else:
+                hint = "\nNo USB serial devices are connected at all."
+        raise RuntimeError("TangCore USB CDC device not found" + hint)
     if len(matches) != 1:
         raise RuntimeError(f"multiple TangCore USB CDC devices found: {matches}")
     return matches[0]

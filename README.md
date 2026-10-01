@@ -1,193 +1,127 @@
-# TangCore firmware for BL616  
+# Tang-Control — TangCore firmware + host client (User Guide)
 
-This is TangCore firmware for the on-board BL616 of Tang Console.
+This repo is a **fork of nand2mario's [firmware-bl616](https://github.com/nand2mario/tangcore)** —
+the TangCore firmware that runs on the BL616 MCU of a Sipeed **Tang Console**
+board — plus the PC-side client that talks to it over USB CDC.
 
-See [this document](https://github.com/nand2mario/tangcore/blob/main/doc/dev.md) for how the firmware works with cores.
+The interesting work lives on the **`feature/usb-cdc-file-transfer`** branch.
 
-## Build instructions
+---
 
-I'm building on Windows. Linux should also work. 
+## What our fork adds over stock
 
-First download Bouffalo toolchain,
+The stock firmware (`master`) loads cores, shows the menu, and does its own
+debug over UART. Our branch adds a proper **USB CDC command console** and the
+transport protocols behind it:
 
-```bash
-git clone https://github.com/bouffalolab/toolchain_gcc_t-head_windows.git
+- `usb/usb_cdc_console.cpp` — the command interpreter (the "tangctl" protocol)
+- `utils/fpga_debug.cpp` / `fpga_ext_frame.h` — extended debug (`0x10`) for `peek`/`poke`/`caps`/`baud`
+- `utils/fpga_stream.cpp` / `fpga_file_stream.cpp` — stream protocol (`0x11`)
+- `utils/firmware_image.h` — no-BOOT-mode firmware update
+- FPGA UART RX rework — interrupt-driven RX + a TX mutex (fixes gamepad/OSD stutter)
 
-# for Linux, clone: https://github.com/bouffalolab/toolchain_gcc_t-head_linux.git
-```
+In short: **every `tangctl.py` command is an addition in this branch.** It does
+not exist in stock firmware.
 
-Add `toolchain_gcc_t-head_linux/bin` to your path.
+---
 
-Then download a patched version of Bouffalo SDK.
-
-```bash
-git clone --recurse-submodules https://github.com/nand2mario/bouffalo_sdk.git
-
-# point BL_SDK_BASE to its location
-set BL_SDK_BASE=<sdk_dir>
-```
-
-Then it should build OK.
-
-```
-make
-make flash COMX=com5
-```
-
-The 2nd line flashes the firmware to BL616 (The required `bl616_fpga_partner_60kConsole.bin` file is [here](https://dl.sipeed.com/shareURL/TANG/Console/09_MCU_FW)). Before executing that, press and hold the "BOOT" button on the Tang Console board (bottom left corner, close to one of the USB-C port), then plug in the USB cable. This enters the BL616 into the programming mode.
-
-For the USB drive, You need an OTG dongle to turn the connector from a "device" one to a "host" one, and provide power at the same time.
-
-## USB CDC console and SD transfer (Console 138K)
-
-The Console 138K build dedicates the bottom-left `DEBUG/OTG` USB-C port to a
-PC-facing CDC serial link. The onboard SD interface and FPGA-side controller
-ports continue to be used normally.
-
-Install pyserial and the included Linux udev rule once:
+## Build the firmware
 
 ```bash
-python3 -m pip install pyserial
-sudo install -m 0644 99-tangcore-usb.rules /etc/udev/rules.d/99-tangcore-usb.rules
-sudo udevadm control --reload-rules
+export PATH=/home/vash/.cache/tangcore-dev/toolchain/bin:$PATH
+cmake --build build/ -j8
 ```
 
-The rule covers both Tang-Control's normal `ffff:6160` CDC console and the
-BL616 ROM bootloader's `349b:6160` programming port. After installing it, hold
-**BOOT**, tap **RESET**, and release **BOOT** to enter programming mode without
-disconnecting power.
+This produces `build/build_out/tangcore_bl616.bin`.
 
-Insert the SD card before boot, power the console normally, wait for the menu,
-and then connect `DEBUG/OTG` to the PC. The development configuration
-enumerates as USB VID:PID `ffff:6160`; `scripts/tangctl.py` finds the serial
-port automatically. These IDs are not an assigned public product identity and
-should be overridden for distributed builds.
+---
+
+## Flash the firmware
+
+There are two cases.
+
+### A. Update an already-running Tang-Control (no BOOT button)
+
+Patch the boot header (length @ `0x84`, CRC @ `0xFC`) and flash over CDC:
 
 ```bash
-python3 scripts/tangctl.py ping
-python3 scripts/tangctl.py status
-python3 scripts/tangctl.py rxstats --reset
-python3 scripts/tangctl.py caps
-python3 scripts/tangctl.py peek 0x00000000 8
-python3 scripts/tangctl.py poke 0x00000020 0x12345678
-python3 scripts/tangctl.py baud 5
-python3 scripts/tangctl.py baud 2
-python3 scripts/tangctl.py stream music/test.wav
-python3 scripts/tangctl.py bench --size 8388608
-python3 scripts/tangctl.py put build/my-core.bin cores/console138k/my-core.bin
-python3 scripts/tangctl.py get cores/console138k/my-core.bin ./my-core.bin
-python3 scripts/tangctl.py ls cores/console138k
-python3 scripts/tangctl.py mkdir cores/console138k/testing
-python3 scripts/tangctl.py rm cores/console138k/testing
+python3 - <<'EOF'
+import zlib
+b = bytearray(open('build/build_out/tangcore_bl616.bin','rb').read())
+b[0x84:0x88] = (len(b) - 0x1000).to_bytes(4, 'little')
+b[0xFC:0x100] = (zlib.crc32(bytes(b[:0xFC])) & 0xffffffff).to_bytes(4, 'little')
+open('build/build_out/tangcore_bl616_flash.bin','wb').write(b)
+EOF
+
+python3 scripts/tangctl.py firmware build/build_out/tangcore_bl616_flash.bin
 ```
 
-Uploads are accepted only while the TangCore main menu is active. Leave the
-controller idle during a transfer. The device writes to a temporary file,
-checks the stream CRC, replaces the destination, and rereads the final file;
-the client fails if the final size or CRC differs from the local file. Downloads
-likewise use a temporary local file and replace the destination only after the
-device-reported size and CRC match. `rm` can remove files or empty directories;
-it does not recursively delete directory trees.
-
-`rxstats` reports the health of the BL616's FPGA UART receive path: bytes and
-joypad frames received, hardware RX FIFO overflows and high-water mark (the FIFO
-holds 32 bytes), bytes skipped while resynchronizing, unknown frame types, and
-the longest gap between FIFO polls. `--reset` zeroes the counters after
-printing, so a reset before a test isolates its results. `status` includes the
-same counters. A rising overflow count means FPGA replies or controller input
-were lost.
-
-To build this variant:
+Then **power-cycle** the board. Verify with:
 
 ```bash
-make TANG_BOARD=console138k USB_CDC_CONSOLE=1 -j$(nproc)
+python3 scripts/tangctl.py status     # app_sha256 should match the new build
 ```
 
-CDC mode is opt-in and currently limited to Console 138K. Without
-`USB_CDC_CONSOLE=1`, the existing USB-host behavior is unchanged. A distributor
-can override the development VID/PID, for example:
+### B. First flash onto a stock board
 
-```bash
-make TANG_BOARD=console138k USB_CDC_CONSOLE=1 \
-    USB_CDC_VID=0x1234 USB_CDC_PID=0x5678 -j$(nproc)
-```
+Follow the stock `README.md` `make flash` procedure (BOOT button + USB), then
+switch to path A for subsequent updates. `scripts/jtag.py` and
+`tdi_compare.py` are the JTAG-side helpers for that flow.
 
-When using assigned IDs, update the VID/PID in `99-tangcore-usb.rules` and pass
-the same values to the client when relying on auto-detection:
+---
 
-```bash
-python3 scripts/tangctl.py --vid 0x1234 --pid 0x5678 status
-```
+## The host client: `tangctl.py`
 
-`flash_usb_console138k.ini` programs only the TangCore application at flash
-offset `0x40000`; it intentionally leaves the board-specific first-stage image
-at offset zero untouched.
+Run from this repo: `python3 scripts/tangctl.py <command>`.
+Requires the **two-wire** setup (power + CDC cable) and **this firmware**.
 
-### Firmware updates without BOOT mode
+| Command | What it does |
+|---------|--------------|
+| `ping` | verify the command channel |
+| `status` | board + loader state |
+| `rxstats [--reset]` | FPGA UART RX health counters |
+| `caps` | FPGA transport capabilities *(needs a Phosphor core)* |
+| `peek <addr> [n]` | read debug register(s) *(needs a Phosphor core)* |
+| `poke <addr> <val>` | write a debug register *(needs a Phosphor core)* |
+| `baud <2\|5>` | switch FPGA UART rate *(needs a Phosphor core)* |
+| `stream <sd-path>` | stream an SD file to the active core |
+| `bench [--size N]` | throughput benchmark |
+| `put <local> <remote>` | upload a file to the SD card |
+| `get <remote> <local>` | download a file from the SD card |
+| `ls [path]` | list an SD directory |
+| `rm <path>` | remove an SD file/directory |
+| `mkdir <path>` | create an SD directory |
+| `firmware <image>` | install a BL616 firmware image |
 
-Once a CDC build with `fwupdate` is installed, later builds can be installed
-from the TangCore main menu without the BOOT button or the flash tool:
+There is no `rename`; rename = `get` + `put` (new name) + `rm`.
 
-```bash
-python3 scripts/tangctl.py firmware build/build_out/tangcore_bl616.bin
-```
+---
 
-The client checks the BL616 boot header and SHA-256, uploads the image to the
-SD card, and asks the BL616 to install it. The BL616 copies the image to a
-staging region and verifies it there. Then, running from RAM with interrupts
-disabled, it rewrites the application at `0x40000`, checking each sector, and
-resets. The vendor loader at offset zero starts its Sipeed USB debugger after a
-software reset and starts TangCore only after power-on. Unplug and replug USB
-when prompted; the client then confirms that `status` reports the new
-`app_sha256`.
+## Debug scripts
 
-Flash layout, from a full readback of a Console 138K: the vendor loader
-occupies `0x000000`-`0x01bfff`, the application may use `0x040000`-`0x0bffff`,
-staging uses `0x100000`-`0x17ffff`, and a vendor data record at `0x200000` is
-never touched. If power is lost while the application is being rewritten,
-recover with BOOT mode and `flash_usb_console138k.ini`; the vendor loader is
-never modified.
+- `liveuart.py` / `liveuart_draw.py` — decode/visualize the BL616↔FPGA UART traffic
+- `print_uart.py` — raw UART dump
+- `jtag.py` + `tdi_compare.py` + `crc16.sh` — JTAG-programming verification helpers
+- `fs.py` — convert Gowin `.fs` → `.bin`
 
-The optional FPGA development channel is documented in
-[`docs/extended-control-protocol.md`](docs/extended-control-protocol.md).
-`peek` and `poke` only work with a core that implements that protocol; their
-address map belongs to the core rather than Tang-Control.
+---
 
-Phosphor cover-art support uses ChaN's TJpgDec R0.03 from the required
-Bouffalo SDK. TJpgDec permits personal, non-profit, and commercial use and
-redistribution when its copyright notice is retained; the SDK source retains
-that notice. JPEG decoding runs on the BL616 and sends only a 92x92 RGB332
-image to the FPGA.
-`stream` reads from the console's SD card and uses acknowledged 1024-byte
-frames. When supported, it temporarily negotiates 5 Mbps and restores the safe
-2 Mbps rate afterward.
+## Relationship to Tang-Phosphor
 
-## Tang-PSX disc service
+- **This repo** is the *firmware* (BL616) and its generic two-wire client. It is
+  core-agnostic and has no dependency on Tang-Phosphor.
+- **Tang-Phosphor** is a specific core and its one-wire (direct-FPGA) tools; it
+  *imports* `tangctl.py` from here for its two-wire access.
 
-`core/tangpsx.cpp` serves PlayStation disc images to the Tang-PSX Gate 1 core
-(core ID low byte `0x51`, debug ABI `0x00020002` or later). While that core is
-active, the service finds the first `.cue` file in the SD-card root, publishes
-the size of the `.bin` its `FILE` line names (in 2352-byte sectors) to debug
-address `0x20c`, and polls a mailbox the core's firmware writes: byte offset
-`0x204`, byte length `0x208`, then sequence `0x200`. Each new sequence is
-answered with one FPGA stream session carrying that byte range of the image
-(`fpga_file_stream` with the `offset`/`length` options). The mailbox is read
-twice around its fields so an unsynchronized update is never served. The USB
-console's `status` command reports the disc, its size, and the request, failure,
-and byte counts.
+So the dependency is one-way: Tang-Phosphor → Tang-Control, never the reverse.
 
-## Tang-Phosphor audio loader
+---
 
-Core ID `0x50` has an integrated SD-card loader for standalone WAV/FLAC files and
-VLC-style M3U/M3U8 playlists. It supports relative files as independent stream
-sessions, automatic track advancement, duplicate entries, and in-core
-controller navigation without packaging the files in a TAR archive. TangCore's
-OSD only opens the audio chooser or returns to the main menu. In the native
-Phosphor screen, Start pauses/resumes, Left/Right select the previous/next
-playlist track, and X shows or hides the screen.
-Setup, compatibility limits, and the deterministic parser test are documented
-in [`docs/phosphor-loader.md`](docs/phosphor-loader.md).
+## Gotchas
 
-Acknowledgements
-* JTAG FPGA programming logic based on [openFPGALoader](https://github.com/trabucayre/openFPGALoader)
-* Gamepad support based on Till Harbaum's [FPGA-Companion](https://github.com/harbaum/FPGA-Companion)
+1. **Two-wire requires this firmware.** Stock nand2mario firmware has no CDC
+   command console; `tangctl.py` cannot talk to it.
+2. **`caps`/`peek`/`poke`/`baud` need a Phosphor core loaded** — those speak the
+   extended `0x10` protocol, which only the Phosphor core implements.
+3. **After a `firmware` update, power-cycle** — the BL616 resets into its vendor
+   loader and TangCore only returns on power-on.
