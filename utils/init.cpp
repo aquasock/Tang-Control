@@ -1,5 +1,6 @@
 extern "C" {
 #include "bflb_gpio.h"
+#include "bflb_irq.h"
 #include "board.h"
 }
 
@@ -11,6 +12,37 @@ extern "C" void bflb_uart_set_console(struct bflb_device_s *dev);
 namespace {
 uint32_t fpga_uart_baud = 2000000;
 bool fpga_uart_initialized = false;
+
+// The BL616 UART RX FIFO is only 32 bytes; at 2 Mbaud a burst of FPGA traffic
+// can overflow it between 1 ms polls, dropping bytes and corrupting frames.
+// Drain the FIFO in the RX interrupt (threshold 7) into a larger ring buffer
+// instead, and let the RX task parse from the ring buffer at its leisure.
+//
+// Minimal single-producer (ISR) / single-consumer (RX task) ring buffer:
+// head is written only by the ISR, tail only by the RX task, so no lock is
+// needed. Size 2048 comfortably covers the 1024-byte stream credit window.
+#define RX_RING_SIZE 2048
+static uint8_t rx_ring_buf[RX_RING_SIZE];
+static volatile uint32_t rx_ring_head = 0;
+static volatile uint32_t rx_ring_tail = 0;
+
+static void uart1_rx_isr(int irq, void *arg)
+{
+    uint32_t intstatus = bflb_uart_get_intstatus(uart1_dev);
+    if (intstatus & (UART_INTSTS_RX_FIFO | UART_INTSTS_RTO)) {
+        while (bflb_uart_rxavailable(uart1_dev)) {
+            const uint8_t ch = (uint8_t)bflb_uart_getchar(uart1_dev);
+            const uint32_t next = (rx_ring_head + 1) & (RX_RING_SIZE - 1);
+            if (next != rx_ring_tail) {  // drop the byte if the ring is full
+                rx_ring_buf[rx_ring_head] = ch;
+                rx_ring_head = next;
+            }
+        }
+        if (intstatus & UART_INTSTS_RTO) {
+            bflb_uart_int_clear(uart1_dev, UART_INTCLR_RTO);
+        }
+    }
+}
 
 bool configure_fpga_uart(uint32_t baudrate)
 {
@@ -32,8 +64,29 @@ bool configure_fpga_uart(uint32_t baudrate)
     bflb_uart_set_console(uart1_dev);
     fpga_uart_initialized = true;
     fpga_uart_baud = baudrate;
+
+    rx_ring_head = 0;
+    rx_ring_tail = 0;
+    bflb_uart_rxint_mask(uart1_dev, false);
+    bflb_irq_attach(uart1_dev->irq_num, uart1_rx_isr, NULL);
+    bflb_irq_enable(uart1_dev->irq_num);
     return true;
 }
+}
+
+uint32_t fpga_uart_rx_ring_len(void)
+{
+    return (rx_ring_head - rx_ring_tail) & (RX_RING_SIZE - 1);
+}
+
+uint32_t fpga_uart_rx_ring_read(uint8_t *ch)
+{
+    if (rx_ring_head == rx_ring_tail) {
+        return 0;  // empty
+    }
+    *ch = rx_ring_buf[rx_ring_tail];
+    rx_ring_tail = (rx_ring_tail + 1) & (RX_RING_SIZE - 1);
+    return 1;
 }
 
 bool fpga_uart_set_baud(uint32_t baudrate)

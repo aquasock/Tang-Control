@@ -82,10 +82,10 @@ const char *BOARD_NAME = "unknown";
 
 // Override system printf() to send to FPGA
 int __attribute__((weak)) putchar(int ch) {
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     fpga_tx_header(0x05, 2);
     fpga_tx_byte(ch);
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
     return ch;
 }
 
@@ -210,13 +210,13 @@ static void send_hid_to_core(void) {
         uint16_t joy1=0, joy2=0, hid1=0, hid2=0;    
         get_joypad_states(&joy1, &joy2, &hid1, &hid2);
         if (first || hid1 != hid1_old || hid2 != hid2_old) {    // send HID if changed
-            taskENTER_CRITICAL();
+            fpga_tx_lock();
             fpga_tx_header(0x09, 5);
             fpga_tx_byte(hid1 >> 8);
             fpga_tx_byte(hid1 & 0xff);
             fpga_tx_byte(hid2 >> 8);
             fpga_tx_byte(hid2 & 0xff);
-            taskEXIT_CRITICAL();
+            fpga_tx_unlock();
             hid1_old = hid1;
             hid2_old = hid2;
             first = false;
@@ -320,27 +320,22 @@ static void uart1_rx_task(void *pvParameters)
         const uint64_t now_us = bflb_mtimer_get_time_us();
         const uint32_t gap_us = static_cast<uint32_t>(now_us - last_poll_us);
         last_poll_us = now_us;
-        const uint32_t waiting =
-            bflb_uart_feature_control(uart1_dev, UART_CMD_GET_RX_FIFO_CNT, 0);
         if (gap_us > rx_stats.max_gap_us)
             rx_stats.max_gap_us = gap_us;
-        if (waiting > rx_stats.fifo_high_water)
-            rx_stats.fifo_high_water = waiting;
 
-        // The overflow flag is sticky until the FIFO is cleared. Bytes were
-        // lost, so the frame in progress is damaged: drop it and resync.
-        if (getreg32(uart1_dev->reg_base + UART_FIFO_CONFIG_0_OFFSET) &
-            UART_RX_FIFO_OVERFLOW) {
-            bflb_uart_feature_control(uart1_dev, UART_CMD_CLR_RX_FIFO, 0);
-            ++rx_stats.fifo_overflows;
-            pos = 0;
+        // Track the ring-buffer high-water mark (repurposed from the FIFO).
+        {
+            const uint32_t rb_len = fpga_uart_rx_ring_len();
+            if (rb_len > rx_stats.fifo_high_water)
+                rx_stats.fifo_high_water = rb_len;
         }
 
-        // Drain every byte already in the FIFO before yielding. Reading only
-        // one byte per scheduler tick adds roughly one millisecond per reply
-        // byte, which throttles acknowledged streams to about 50 KiB/s.
-        while (bflb_uart_rxavailable(uart1_dev)) {
-            uint8_t ch = bflb_uart_getchar(uart1_dev);
+        // Parse whatever the RX interrupt has drained into the ring buffer.
+        // The FIFO-overflow path is gone: the ISR drains at threshold 7, well
+        // before the 32-byte FIFO can overflow.
+        while (fpga_uart_rx_ring_len() > 0) {
+            uint8_t ch;
+            fpga_uart_rx_ring_read(&ch);
             ++rx_stats.bytes;
 
             if (pos == 0) {          // expecting 0xAA
@@ -416,12 +411,12 @@ static void uart1_rx_task(void *pvParameters)
                         UINT br;
                         f_lseek(&f_floppy[drive], sector * 512);
                         if (f_read(&f_floppy[drive], fbuf, 512, &br) == FR_OK) {
-                            taskENTER_CRITICAL();
+                            fpga_tx_lock();
                             fpga_tx_header(0x0a, br+1);
                             for (UINT i = 0; i < br; i++) {
                                 fpga_tx_byte(fbuf[i]);
                             }
-                            taskEXIT_CRITICAL();
+                            fpga_tx_unlock();
                         } else {
                             overlay_status("Failed to read floppy");
                         }
@@ -653,6 +648,7 @@ int main(void)
 
     // Create mutex for joypad states
     state_mutex = xSemaphoreCreateMutex();
+    uart_tx_mutex = xSemaphoreCreateMutex();
     fpga_debug_init();
     fpga_stream_init();
     fpga_file_stream_init();

@@ -150,6 +150,9 @@ extern void fpga_rx_reset_stats(void);
 
 extern void get_joypad_states(uint16_t *joy1, uint16_t *joy2, uint16_t *hid1, uint16_t *hid2);
 extern int16_t get_core_id(void);
+extern SemaphoreHandle_t uart_tx_mutex;
+extern void fpga_tx_lock(void);
+extern void fpga_tx_unlock(void);
 extern uint32_t get_core_config(void);
 extern void set_core_config(uint32_t config);
 

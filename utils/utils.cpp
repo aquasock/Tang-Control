@@ -11,6 +11,22 @@ void fpga_tx_byte(uint8_t b) {
     bflb_uart_putchar(uart1_dev, b);
 }
 
+// Serializes whole-frame UART writes across tasks WITHOUT disabling interrupts
+// (taskENTER_CRITICAL starves the RX interrupt, overflowing the 32-byte FIFO).
+SemaphoreHandle_t uart_tx_mutex = nullptr;
+
+void fpga_tx_lock(void) {
+    if (uart_tx_mutex != nullptr) {
+        xSemaphoreTake(uart_tx_mutex, portMAX_DELAY);
+    }
+}
+
+void fpga_tx_unlock(void) {
+    if (uart_tx_mutex != nullptr) {
+        xSemaphoreGive(uart_tx_mutex);
+    }
+}
+
 uint32_t get_file_size(const char *fname) {
     FILINFO fno;
     FRESULT r = f_stat(fname, &fno);
@@ -20,30 +36,30 @@ uint32_t get_file_size(const char *fname) {
 
 // Send a romdata packet to core of len bytes in `fbuf`
 void send_fbuf_data(uint16_t len) {
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     fpga_tx_header(0x07, len+1);
     for (int i = 0; i < len; i ++) {
         fpga_tx_byte(fbuf[i]);
     }
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 }
 
 // set loading state
 void set_loading_state(int state) {
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     fpga_tx_header(0x06, 2);
     fpga_tx_byte(state);        
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 }
 
 
 // bring FPGA to a good state by sending a few 0's
 void send_blank_packet(void) {
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     for (int i = 0; i < 8; i++) {
         fpga_tx_byte(0);
     }
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 }
 
 #include <string>
@@ -67,13 +83,13 @@ uint32_t get_core_config(void) {
 
 void set_core_config(uint32_t config) {
     core_config = config;
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     fpga_tx_header(0x03, 5);
     fpga_tx_byte(config >> 24);
     fpga_tx_byte(config >> 16);
     fpga_tx_byte(config >> 8);
     fpga_tx_byte(config);
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 }
 
 /////////////////////////////////////////////////////////////////////////////////
@@ -107,9 +123,9 @@ int16_t get_core_id(void) {
     }
 
     // send command 1
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     fpga_tx_header(0x01, 1);
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 
     // TODO: use a queue for better performance
     uint64_t start = bflb_mtimer_get_time_ms();
