@@ -74,7 +74,7 @@ bool transaction_locked(uint8_t command, uint8_t *payload, size_t length,
     }
     const size_t sealed_length = fpga_ext_seal_request(command, payload, length, sequence);
 
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     pending_opcode = payload[1];
     pending_sequence = sequence;
     pending_address = read_be32(&payload[4]);
@@ -84,7 +84,7 @@ bool transaction_locked(uint8_t command, uint8_t *payload, size_t length,
     for (size_t i = 0; i < sealed_length; ++i) {
         fpga_tx_byte(payload[i]);
     }
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 
     const BaseType_t received =
         xSemaphoreTake(response_ready, pdMS_TO_TICKS(timeout_ms));

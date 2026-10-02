@@ -454,6 +454,10 @@ def main():
     baud.add_argument("rate", type=int, choices=(2, 5), help="Mbps")
     stream = subparsers.add_parser("stream")
     stream.add_argument("remote", help="path relative to the SD-card root")
+    play = subparsers.add_parser("play")
+    play.add_argument("remote", help="path relative to the SD-card root")
+    core = subparsers.add_parser("core")
+    core.add_argument("remote", help="path relative to the SD-card root")
     benchmark = subparsers.add_parser("bench")
     benchmark.add_argument("--size", type=int, default=8 * 1024 * 1024)
     upload = subparsers.add_parser("put")
@@ -505,6 +509,12 @@ def main():
         elif args.command == "stream":
             validate_remote_path(args.remote)
             run_command(port, f"stream {args.remote}", timeout=600)
+        elif args.command == "play":
+            validate_remote_path(args.remote)
+            run_command(port, f"play {args.remote}", timeout=600)
+        elif args.command == "core":
+            validate_remote_path(args.remote)
+            run_command(port, f"core {args.remote}", timeout=120)
         else:
             run_command(port, args.command)
     return 0

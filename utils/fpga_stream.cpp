@@ -78,7 +78,7 @@ bool fpga_stream_send(uint8_t flags, uint16_t stream_id, uint32_t offset,
     pending_id = stream_id;
     pending = true;
 
-    taskENTER_CRITICAL();
+    fpga_tx_lock();
     fpga_tx_header(FPGA_STREAM_COMMAND, static_cast<int>(length) + 13);
     uint16_t crc = crc16_byte(0xffffu, FPGA_STREAM_COMMAND);
     send_crc_byte(FPGA_STREAM_VERSION, crc);
@@ -96,7 +96,7 @@ bool fpga_stream_send(uint8_t flags, uint16_t stream_id, uint32_t offset,
     }
     fpga_tx_byte(static_cast<uint8_t>(crc >> 8));
     fpga_tx_byte(static_cast<uint8_t>(crc));
-    taskEXIT_CRITICAL();
+    fpga_tx_unlock();
 
     const BaseType_t received =
         xSemaphoreTake(response_ready, pdMS_TO_TICKS(timeout_ms));

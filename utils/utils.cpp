@@ -1,5 +1,9 @@
 #include "utils.h"
 
+// Shared-link serialization (defined in utils/fpga_debug.cpp).
+bool fpga_link_acquire(uint32_t timeout_ms);
+void fpga_link_release(void);
+
 void fpga_tx_header(int cmd, int len) {
     bflb_uart_putchar(uart1_dev, 0xAA);
     bflb_uart_putchar(uart1_dev, len >> 8);
@@ -122,10 +126,20 @@ int16_t get_core_id(void) {
         xSemaphoreGive(state_mutex);
     }
 
+    // Serialize the core-ID poll with in-flight stream/debug transactions.
+    // The stream holds the shared link across each frame's ACK wait, so while
+    // a play/stream session is active this poll must not send its command and
+    // compete for the FPGA's single response channel.
+    if (!fpga_link_acquire(50)) {
+        return -1;
+    }
+
     // send command 1
     fpga_tx_lock();
     fpga_tx_header(0x01, 1);
     fpga_tx_unlock();
+
+    fpga_link_release();
 
     // TODO: use a queue for better performance
     uint64_t start = bflb_mtimer_get_time_ms();

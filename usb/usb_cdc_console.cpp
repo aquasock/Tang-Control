@@ -27,6 +27,7 @@ extern "C" {
 #include "fpga_debug.h"
 #include "fpga_stream.h"
 #include "fpga_file_stream.h"
+#include "programmer.h"
 #include "firmware_update.h"
 #include "init.h"
 #include "utils.h"
@@ -470,6 +471,112 @@ void run_stream(const char *path)
                static_cast<unsigned>(result.bytes),
                static_cast<unsigned long long>(result.elapsed_ms),
                static_cast<unsigned>(result.crc32));
+}
+
+// Resident AE350 player image on the SD card, loaded into the AE350 before
+// the audio file.
+static const char PLAYER_TPI[] = "ae350/mplayer.tpi";
+
+static bool poke32(uint32_t address, uint32_t value)
+{
+    fpga_debug_result result;
+    return run_fpga_request(FPGA_EXT_WRITE32, address, value, result);
+}
+
+void run_play(const char *path)
+{
+    if (!valid_remote_path(path)) {
+        cdc_print("ERR invalid remote path\r\n");
+        return;
+    }
+    if (strcmp(drv, "sd:") != 0) {
+        cdc_print("ERR SD card is not mounted\r\n");
+        return;
+    }
+
+    char full_path[192];
+    if (!make_sd_path(full_path, sizeof(full_path), path)) {
+        cdc_print("ERR remote path is too long\r\n");
+        return;
+    }
+    char player_path[192];
+    if (!make_sd_path(player_path, sizeof(player_path), PLAYER_TPI)) {
+        cdc_print("ERR remote path is too long\r\n");
+        return;
+    }
+
+    // Route the stream/debug to the AE350 and restart its loader.
+    if (!poke32(0x000000c0u, 1u) || !poke32(0x000043f0u, 1u))
+        return;
+
+    // Wait for the loader to reach WAIT (state 0x01 at debug 0x4020).
+    bool waited = false;
+    for (int i = 0; i < 100; ++i) {
+        fpga_debug_result result;
+        if (!run_fpga_request(FPGA_EXT_READ32, 0x00004020u, 0, result))
+            return;
+        if ((result.data & 0xffu) == 0x01u) {
+            waited = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (!waited) {
+        cdc_print("ERR AE350 loader did not reach WAIT\r\n");
+        poke32(0x000000c0u, 0u);
+        return;
+    }
+
+    const fpga_file_stream_result pr = fpga_file_stream(player_path);
+    if (pr.status != fpga_file_stream_status::OK) {
+        cdc_printf("ERR player stream %s fatfs=%u transport=%u\r\n",
+                   fpga_file_stream_status_text(pr.status),
+                   static_cast<unsigned>(pr.filesystem_status),
+                   static_cast<unsigned>(pr.transport_status));
+        poke32(0x000000c0u, 0u);
+        return;
+    }
+
+    const fpga_file_stream_result ar = fpga_file_stream(full_path);
+    if (ar.status != fpga_file_stream_status::OK) {
+        cdc_printf("ERR audio stream %s fatfs=%u transport=%u\r\n",
+                   fpga_file_stream_status_text(ar.status),
+                   static_cast<unsigned>(ar.filesystem_status),
+                   static_cast<unsigned>(ar.transport_status));
+        poke32(0x000000c0u, 0u);
+        return;
+    }
+
+    // Leave cpu_mode set (0x00c0 bit 0 = 1) on success: the resident player
+    // decodes then streams PCM through the AE350 play path into the pcm_sink.
+    // Clearing it here would route the pcm_sink back to the (idle) BL616
+    // stream before playback starts, silencing the output.
+    cdc_printf("PLAY bytes=%u ms=%llu\r\nOK\r\n",
+               static_cast<unsigned>(ar.bytes),
+               static_cast<unsigned long long>(ar.elapsed_ms));
+}
+
+void run_core(const char *path)
+{
+    if (!valid_remote_path(path)) {
+        cdc_print("ERR invalid remote path\r\n");
+        return;
+    }
+    if (strcmp(drv, "sd:") != 0) {
+        cdc_print("ERR SD card is not mounted\r\n");
+        return;
+    }
+    char full_path[192];
+    if (!make_sd_path(full_path, sizeof(full_path), path)) {
+        cdc_print("ERR remote path is too long\r\n");
+        return;
+    }
+    if (!fpga_program(full_path)) {
+        cdc_print("ERR core load failed\r\n");
+        return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+    cdc_print("OK\r\n");
 }
 
 void run_benchmark(uint32_t expected)
@@ -965,6 +1072,8 @@ void execute_command(char *line)
                   "poke <addr> <val> write an FPGA debug word\r\n"
                   "baud <2|5>        negotiate FPGA UART rate in Mbps\r\n"
                   "stream <path>     stream an SD file to the active core\r\n"
+                  "play <path>       stream an SD audio file to the AE350\r\n"
+                  "core <path>       program the FPGA with an SD core image\r\n"
                   "bench <bytes>     receive raw data and report speed/CRC\r\n"
                   "put <size> <crc> <path>  upload a file to SD\r\n"
                   "get <path>        download a file from SD\r\n"
@@ -995,6 +1104,10 @@ void execute_command(char *line)
         if (require_ext_core()) run_baud(line + 5);
     } else if (strncmp(line, "stream ", 7) == 0) {
         run_stream(line + 7);
+    } else if (strncmp(line, "play ", 5) == 0) {
+        run_play(line + 5);
+    } else if (strncmp(line, "core ", 5) == 0) {
+        run_core(line + 5);
     } else if (strncmp(line, "bench ", 6) == 0) {
         char *parse_end = nullptr;
         const unsigned long size = strtoul(line + 6, &parse_end, 0);
