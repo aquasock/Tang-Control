@@ -121,17 +121,16 @@ void get_joypad_states(uint16_t *joy1, uint16_t *joy2, uint16_t *hid1, uint16_t 
 // query over UART to return if the correct core is loaded
 // return >= 0 if request is successful, -1 if timeout (200ms)
 int16_t get_core_id(void) {
+    // While a stream/debug transaction holds the shared link, keep the last
+    // known core id so an active play session doesn't make the menu drop the
+    // core (active_core would otherwise fall back to -1 mid-stream).
+    if (!fpga_link_acquire(50)) {
+        return core_id;
+    }
+
     if (xSemaphoreTake(state_mutex, portMAX_DELAY) == pdTRUE) {
         core_id = -1;
         xSemaphoreGive(state_mutex);
-    }
-
-    // Serialize the core-ID poll with in-flight stream/debug transactions.
-    // The stream holds the shared link across each frame's ACK wait, so while
-    // a play/stream session is active this poll must not send its command and
-    // compete for the FPGA's single response channel.
-    if (!fpga_link_acquire(50)) {
-        return -1;
     }
 
     // send command 1

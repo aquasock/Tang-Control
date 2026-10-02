@@ -39,46 +39,55 @@ bool read32(uint32_t address, uint32_t *value)
 
 bool ae350_play_file(const char *full_path, const char **error_out)
 {
-    // Route the stream/debug to the AE350 and restart its loader.
-    if (!poke32(0x000000c0u, 1u) || !poke32(0x000043f0u, 1u)) {
+    // The resident player loops forever once loaded: the loader stays in RUN
+    // state (0x03) while the player waits for the next stream and while it
+    // plays.  Only a fresh core (WAIT) or a trapped/crashed player needs a
+    // reload, so the player image is streamed at most once per core load.
+    uint32_t state = 0;
+    if (!read32(0x00004020u, &state)) {
         if (error_out != nullptr)
             *error_out = "AE350 did not respond";
         return false;
     }
 
-    // Wait for the loader to reach WAIT (state 0x01 at debug 0x4020).
-    bool waited = false;
-    for (int i = 0; i < 100; ++i) {
-        uint32_t state = 0;
-        if (!read32(0x00004020u, &state)) {
+    if ((state & 0xffu) != 0x03u) {
+        // Route the stream/debug to the AE350 and restart its loader.
+        if (!poke32(0x000000c0u, 1u) || !poke32(0x000043f0u, 1u)) {
             if (error_out != nullptr)
                 *error_out = "AE350 did not respond";
             return false;
         }
-        if ((state & 0xffu) == 0x01u) {
-            waited = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    if (!waited) {
-        poke32(0x000000c0u, 0u);
-        if (error_out != nullptr)
-            *error_out = "AE350 loader did not reach WAIT";
-        return false;
-    }
 
-    const fpga_file_stream_result player = fpga_file_stream(PLAYER_TPI);
-    if (player.status != fpga_file_stream_status::OK) {
-        poke32(0x000000c0u, 0u);
-        if (error_out != nullptr)
-            *error_out = fpga_file_stream_status_text(player.status);
-        return false;
+        // Wait for the loader to reach WAIT (state 0x01).
+        bool waited = false;
+        for (int i = 0; i < 100; ++i) {
+            if (!read32(0x00004020u, &state)) {
+                if (error_out != nullptr)
+                    *error_out = "AE350 did not respond";
+                return false;
+            }
+            if ((state & 0xffu) == 0x01u) {
+                waited = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (!waited) {
+            if (error_out != nullptr)
+                *error_out = "AE350 loader did not reach WAIT";
+            return false;
+        }
+
+        const fpga_file_stream_result player = fpga_file_stream(PLAYER_TPI);
+        if (player.status != fpga_file_stream_status::OK) {
+            if (error_out != nullptr)
+                *error_out = fpga_file_stream_status_text(player.status);
+            return false;
+        }
     }
 
     const fpga_file_stream_result audio = fpga_file_stream(full_path);
     if (audio.status != fpga_file_stream_status::OK) {
-        poke32(0x000000c0u, 0u);
         if (error_out != nullptr)
             *error_out = fpga_file_stream_status_text(audio.status);
         return false;
