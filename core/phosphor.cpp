@@ -15,6 +15,7 @@ extern "C" {
 #include "file_chooser.h"
 #include "fpga_debug.h"
 #include "fpga_file_stream.h"
+#include "ae350_play.h"
 #include "m3u_playlist.h"
 #include "overlay.h"
 #include "phosphor_artwork.h"
@@ -582,12 +583,36 @@ bool parse_playlist(const std::string &path, std::vector<M3uEntry> &entries,
     return true;
 }
 
+// Single-file audio extensions the resident AE350 (Rockbox) player decodes.
+// The extension only drives the file chooser; the codec itself is chosen by
+// content inside the AE350.
+constexpr const char *AUDIO_EXTENSIONS[] = {
+    ".mp3", ".mp2", ".mp1", ".mpa", ".flac", ".wav", ".ogg", ".oga",
+    ".opus", ".m4a", ".m4b", ".mp4", ".aac", ".wv", ".wma", ".wmv",
+    ".asf", ".ac3", ".a52", ".tta", nullptr,
+};
+
+bool is_audio_extension(const std::string &path)
+{
+    for (const char *const *ext = AUDIO_EXTENSIONS; *ext != nullptr; ++ext)
+        if (m3u_path_has_extension(path, *ext))
+            return true;
+    return false;
+}
+
+std::vector<std::string> audio_extension_list()
+{
+    std::vector<std::string> result;
+    for (const char *const *ext = AUDIO_EXTENSIONS; *ext != nullptr; ++ext)
+        result.push_back(*ext);
+    return result;
+}
+
 bool load_selection(const std::string &path, std::vector<M3uEntry> &entries,
                     std::string &error)
 {
     entries.clear();
-    if (m3u_path_has_extension(path, ".wav") ||
-        m3u_path_has_extension(path, ".flac")) {
+    if (is_audio_extension(path)) {
         FILINFO info;
         if (f_stat(path.c_str(), &info) != FR_OK ||
             (info.fattrib & AM_DIR) != 0 || info.fsize == 0) {
@@ -601,7 +626,7 @@ bool load_selection(const std::string &path, std::vector<M3uEntry> &entries,
         m3u_path_has_extension(path, ".m3u8")) {
         return parse_playlist(path, entries, error);
     }
-    error = "Choose WAV, FLAC, M3U, or M3U8";
+    error = "Choose an audio file";
     return false;
 }
 
@@ -690,9 +715,24 @@ void player_task(void *)
                 report_error(error, 0, 0);
                 continue;
             }
+            const bool is_playlist = m3u_path_has_extension(command_path, ".m3u") ||
+                                     m3u_path_has_extension(command_path, ".m3u8");
+            if (!is_playlist) {
+                // Single audio file: stream it into the resident AE350 player.
+                const std::string title = basename_of(command_path);
+                update_state(player_status::PLAYING, title, {}, 1, 1);
+                const char *play_error = nullptr;
+                if (ae350_play_file(playlist[0].path.c_str(), &play_error)) {
+                    overlay_status("Playing: %s", title.c_str());
+                } else {
+                    report_error(play_error != nullptr ? play_error : "Playback failed",
+                                 1, 1);
+                }
+                playlist.clear();
+                continue;
+            }
             selection_name = command_path;
-            playlist_mode = m3u_path_has_extension(command_path, ".m3u") ||
-                            m3u_path_has_extension(command_path, ".m3u8");
+            playlist_mode = true;
             current = 0;
             set_paused(false);
             make_ui_visible = true;
@@ -790,7 +830,7 @@ struct PhosphorMenu : Menu {
             chooser.rootdir = directory_;
             chooser.curdir = directory_;
             chooser.msg_return = "<< Cancel";
-            chooser.extensions = {".wav", ".flac", ".m3u", ".m3u8"};
+            chooser.extensions = phosphor_audio_extensions();
             std::string path;
             const bool selected = chooser.choose_file(path);
             do_redraw();
@@ -812,6 +852,11 @@ private:
 };
 
 } // namespace
+
+std::vector<std::string> phosphor_audio_extensions()
+{
+    return audio_extension_list();
+}
 
 void phosphor_player_init(void)
 {

@@ -27,6 +27,7 @@ extern "C" {
 #include "fpga_debug.h"
 #include "fpga_stream.h"
 #include "fpga_file_stream.h"
+#include "ae350_play.h"
 #include "programmer.h"
 #include "firmware_update.h"
 #include "init.h"
@@ -473,16 +474,6 @@ void run_stream(const char *path)
                static_cast<unsigned>(result.crc32));
 }
 
-// Resident AE350 player image on the SD card, loaded into the AE350 before
-// the audio file.
-static const char PLAYER_TPI[] = "ae350/mplayer.tpi";
-
-static bool poke32(uint32_t address, uint32_t value)
-{
-    fpga_debug_result result;
-    return run_fpga_request(FPGA_EXT_WRITE32, address, value, result);
-}
-
 void run_play(const char *path)
 {
     if (!valid_remote_path(path)) {
@@ -493,67 +484,18 @@ void run_play(const char *path)
         cdc_print("ERR SD card is not mounted\r\n");
         return;
     }
-
     char full_path[192];
     if (!make_sd_path(full_path, sizeof(full_path), path)) {
         cdc_print("ERR remote path is too long\r\n");
         return;
     }
-    char player_path[192];
-    if (!make_sd_path(player_path, sizeof(player_path), PLAYER_TPI)) {
-        cdc_print("ERR remote path is too long\r\n");
+
+    const char *error = nullptr;
+    if (!ae350_play_file(full_path, &error)) {
+        cdc_printf("ERR play %s\r\n", error != nullptr ? error : "failed");
         return;
     }
-
-    // Route the stream/debug to the AE350 and restart its loader.
-    if (!poke32(0x000000c0u, 1u) || !poke32(0x000043f0u, 1u))
-        return;
-
-    // Wait for the loader to reach WAIT (state 0x01 at debug 0x4020).
-    bool waited = false;
-    for (int i = 0; i < 100; ++i) {
-        fpga_debug_result result;
-        if (!run_fpga_request(FPGA_EXT_READ32, 0x00004020u, 0, result))
-            return;
-        if ((result.data & 0xffu) == 0x01u) {
-            waited = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    if (!waited) {
-        cdc_print("ERR AE350 loader did not reach WAIT\r\n");
-        poke32(0x000000c0u, 0u);
-        return;
-    }
-
-    const fpga_file_stream_result pr = fpga_file_stream(player_path);
-    if (pr.status != fpga_file_stream_status::OK) {
-        cdc_printf("ERR player stream %s fatfs=%u transport=%u\r\n",
-                   fpga_file_stream_status_text(pr.status),
-                   static_cast<unsigned>(pr.filesystem_status),
-                   static_cast<unsigned>(pr.transport_status));
-        poke32(0x000000c0u, 0u);
-        return;
-    }
-
-    const fpga_file_stream_result ar = fpga_file_stream(full_path);
-    if (ar.status != fpga_file_stream_status::OK) {
-        cdc_printf("ERR audio stream %s fatfs=%u transport=%u\r\n",
-                   fpga_file_stream_status_text(ar.status),
-                   static_cast<unsigned>(ar.filesystem_status),
-                   static_cast<unsigned>(ar.transport_status));
-        poke32(0x000000c0u, 0u);
-        return;
-    }
-
-    // Leave cpu_mode set (0x00c0 bit 0 = 1) on success: the resident player
-    // decodes then streams PCM through the AE350 play path into the pcm_sink.
-    // Clearing it here would route the pcm_sink back to the (idle) BL616
-    // stream before playback starts, silencing the output.
-    cdc_printf("PLAY bytes=%u ms=%llu\r\nOK\r\n",
-               static_cast<unsigned>(ar.bytes),
-               static_cast<unsigned long long>(ar.elapsed_ms));
+    cdc_print("OK\r\n");
 }
 
 void run_core(const char *path)

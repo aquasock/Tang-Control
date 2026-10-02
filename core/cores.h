@@ -42,6 +42,9 @@ struct PcxtMenu: Menu {
 Menu *create_default_menu(const char *imgdir);
 Menu *create_pcxt_menu(const char *imgdir);
 Menu *create_phosphor_menu(const char *imgdir);
+// Audio file extensions the resident AE350 (Rockbox) player decodes, for
+// the main-menu Phosphor file chooser.
+std::vector<std::string> phosphor_audio_extensions();
 void phosphor_player_init(void);
 void tangpsx_disc_init(void);
 void tangpsx_disc_status(void (*print)(const char *format, ...));
