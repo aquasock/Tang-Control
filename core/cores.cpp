@@ -40,7 +40,7 @@ void init_core_list() {
         {4, "MegaDrive / Genesis", "genesis", "mdtang.bin", loadmd, create_default_menu},
         {5, "Sega Master System", "sms", "smstang.bin", loadsms, create_default_menu},
         {6, "IBM PC/XT", "pc", "pctang.bin", loadpc, create_pcxt_menu},
-        {0x50, "Phosphor", "music", "tang-phosphor-merged.bin", loadphosphor,
+        {0x50, "Phosphor", "music", "phosphortang.bin", loadphosphor,
          create_phosphor_menu},
         {0, nullptr, nullptr, nullptr, nullptr, nullptr}
     };

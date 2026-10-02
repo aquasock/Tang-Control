@@ -811,7 +811,7 @@ struct PhosphorMenu : Menu {
     {
         overlay_clear();
         overlay_cursor(0, 8);
-        overlay_printf("       --- Phosphor ---");
+        overlay_printf("--- Phosphor - Audio Player ---");
         overlay_cursor(0, 12);
         overlay_printf("  Load Audio / Playlist");
         overlay_cursor(0, 14);

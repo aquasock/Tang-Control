@@ -10,12 +10,18 @@ be combined in a TAR archive.
 Place the stable core image at:
 
 ```text
-cores/console138k/tang-phosphor.bin
+cores/console138k/phosphortang.bin
 ```
 
 Place audio and playlists under `music/`. TangCore then shows **Phosphor** in
-its main menu. Selecting it opens the filtered audio chooser, loads the FPGA
-core when necessary, and begins the selected WAV, FLAC, or playlist.
+its main menu, whose submenu header reads **Phosphor - Audio Player**.
+Selecting it opens the filtered audio chooser, loads the FPGA core when
+necessary, and begins the selected file.
+
+Single-file playback decodes on the AE350 with Rockbox's codecs, so one entry
+point covers MP3, WAV, FLAC, MP2, Ogg Vorbis, Opus, AAC, ALAC, WavPack, WMA,
+AC-3, and TTA. The codec is chosen from the file's contents, not its
+name. Playlists remain limited to WAV and FLAC, as described below.
 
 The TangCore OSD intentionally provides only **Load Audio / Playlist** and
 **Main Menu**. Opening or navigating the OSD does not stop playback. Playback
@@ -87,8 +93,9 @@ A gapless successor is queued up to one PCM FIFO (about 0.4 s) ahead of its
 audio. Its text and artwork are written to the inactive FPGA banks early and
 committed once the core's audible-stream register (`0xa4`) reports the new
 session, so the display changes with the sound. Left/Right pressed during that
-short window act relative to the queued track. The current project scope is
-intentionally limited to WAV and FLAC.
+short window act relative to the queued track. Playlist playback is
+intentionally limited to WAV and FLAC; single-file playback covers the full
+Rockbox codec set listed above.
 
 ## Verification
 
