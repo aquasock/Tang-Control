@@ -119,12 +119,14 @@ FileChooser file_chooser;
 // return 0: user chose a ROM (*choice), 1: no choice made, -1: error
 // file chosen: pwd / file_name[*choice]
 static int menu_loadrom(const char *dir,
-                        const std::vector<std::string> &extensions = {}) {
+                        const std::vector<std::string> &extensions = {},
+                        const char *title = "") {
     string fname;
     file_chooser.rootdir = dir;
     file_chooser.curdir = dir;
     file_chooser.msg_return = "<< Return to main menu";
     file_chooser.extensions = extensions;
+    file_chooser.title = title;
     bool r = file_chooser.choose_file(fname);
     if (!r) {
         overlay_status("No file chosen");
@@ -596,7 +598,8 @@ static void main_task(void *pvParameters)
             if (core) {
                 std::string dir = std::string(drv).append(core->rom_dir);
                 if (core->id == 0x50) {
-                    menu_loadrom(dir.c_str(), phosphor_audio_extensions());
+                    menu_loadrom(dir.c_str(), phosphor_audio_extensions(),
+                                 phosphor_menu_title());
                 } else {
                     menu_loadrom(dir.c_str());
                 }

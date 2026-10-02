@@ -18,6 +18,8 @@ struct FileChooser {
     string curdir;
     string curfile;
     string msg_return = "<< Return to main menu";
+    // Optional header drawn on the blank first line, e.g. the core's name.
+    string title;
     vector<string> extensions;
     // FATFS *fs;
 

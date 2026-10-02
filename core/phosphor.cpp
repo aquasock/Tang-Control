@@ -811,7 +811,7 @@ struct PhosphorMenu : Menu {
     {
         overlay_clear();
         overlay_cursor(0, 8);
-        overlay_printf("--- Phosphor - Audio Player ---");
+        overlay_printf("%s", phosphor_menu_title());
         overlay_cursor(0, 12);
         overlay_printf("  Load Audio / Playlist");
         overlay_cursor(0, 14);
@@ -830,6 +830,7 @@ struct PhosphorMenu : Menu {
             chooser.rootdir = directory_;
             chooser.curdir = directory_;
             chooser.msg_return = "<< Cancel";
+            chooser.title = phosphor_menu_title();
             chooser.extensions = phosphor_audio_extensions();
             std::string path;
             const bool selected = chooser.choose_file(path);
@@ -852,6 +853,11 @@ private:
 };
 
 } // namespace
+
+const char *phosphor_menu_title()
+{
+    return "--- Phosphor - Audio Player ---";
+}
 
 std::vector<std::string> phosphor_audio_extensions()
 {

@@ -77,6 +77,10 @@ bool FileChooser::choose_file(string &res) {
         overlay_clear();
         bool r = list_files(this->curdir, files, page*PAGESIZE, PAGESIZE, &total);
         if (r) {
+            if (!title.empty()) {
+                overlay_cursor(0, 0);
+                overlay_printf("%s", title.c_str());
+            }
             pages = (total+PAGESIZE-1) / PAGESIZE;
             overlay_status("Page ");
             overlay_printf("%d/%d", page+1, pages);

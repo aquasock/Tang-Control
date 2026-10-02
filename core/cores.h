@@ -45,6 +45,9 @@ Menu *create_phosphor_menu(const char *imgdir);
 // Audio file extensions the resident AE350 (Rockbox) player decodes, for
 // the main-menu Phosphor file chooser.
 std::vector<std::string> phosphor_audio_extensions();
+// Header shown above the Phosphor file chooser, so the entry is recognisable
+// as an audio player rather than by name alone.
+const char *phosphor_menu_title();
 void phosphor_player_init(void);
 void tangpsx_disc_init(void);
 void tangpsx_disc_status(void (*print)(const char *format, ...));
